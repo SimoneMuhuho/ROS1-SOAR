@@ -63,6 +63,35 @@ def world_to_map(wx, wy, recMap):
     return mx, my
 
 
+def score_pose(map_array, scan_points, pose, recMap):
+    """Return how well a given (x, y, theta) aligns scan with map."""
+    x, y, theta = pose
+    res = recMap.info.resolution
+    ox = recMap.info.origin.position.x
+    oy = recMap.info.origin.position.y
+
+    # rotate + translate scan into world
+    rot = np.array([[math.cos(theta), -math.sin(theta)],
+                    [math.sin(theta),  math.cos(theta)]])
+    transformed = (rot @ scan_points.T).T
+    wx = transformed[:, 0] + x
+    wy = transformed[:, 1] + y
+
+    # world → map
+    mx = (wx - ox) / res
+    my = (wy - oy) / res
+    h, w = map_array.shape
+    valid = (mx >= 0) & (mx < w) & (my >= 0) & (my < h)
+    mx = np.clip(np.round(mx[valid]).astype(int), 0, w-1)
+    my = np.clip(np.round(my[valid]).astype(int), 0, h-1)
+
+    # higher score if more beams hit occupied cells
+    if len(mx) == 0:
+        return 0
+    return np.sum(map_array[my, mx] > 50)
+
+
+
 # --- Start ROS node ---
 rospy.init_node('mazeEscape', anonymous=True)
 rospy.loginfo("Node started: mazeEscape")
@@ -95,6 +124,28 @@ plt.pause(1)
 scan_sub = rospy.Subscriber('/scan', LaserScan, scan_callback)
 rospy.loginfo("Subscribed to /scan topic.")
 
+
+def find_best_pose(scan_points, map_array, recMap):
+    res = recMap.info.resolution
+    width = recMap.info.width
+    height = recMap.info.height
+
+    x_candidates = np.linspace(0, width * res, 20)
+    y_candidates = np.linspace(0, height * res, 20)
+    theta_candidates = np.linspace(-math.pi, math.pi, 12)
+
+    best_score = -1
+    best_pose = None
+    for x in x_candidates:
+        for y in y_candidates:
+            for t in theta_candidates:
+                s = score_pose(map_array, scan_points, (x, y, t), recMap)
+                if s > best_score:
+                    best_score = s
+                    best_pose = (x, y, t)
+    return best_pose
+
+
 # --- Visualization loop ---
 plt.ion()
 fig, ax = plt.subplots(figsize=(8, 8))
@@ -102,13 +153,23 @@ fig, ax = plt.subplots(figsize=(8, 8))
 while not rospy.is_shutdown():
     if scan_data is not None:
         # Convert LaserScan (world coordinates) to map pixel coordinates
-        xs_world = scan_data[:, 0]
-        ys_world = scan_data[:, 1]
+        xs_world = -scan_data[:, 0]  # flip x-axis
+        ys_world = -scan_data[:, 1]  # flip y-axis
         xs_map, ys_map = world_to_map(xs_world, ys_world, recMap)
 
         ax.clear()
         ax.imshow(map_array, cmap='gray', origin='lower')
-        ax.scatter(xs_map, ys_map, c='r', s=8, label='LaserScan (map frame)')
+        best_pose = find_best_pose(scan_data, map_array, recMap)
+        if best_pose:
+            x, y, theta = best_pose
+            rot = np.array([[math.cos(theta), -math.sin(theta)],
+                            [math.sin(theta),  math.cos(theta)]])
+            transformed = (rot @ scan_data.T).T + np.array([x, y])
+            xs_map, ys_map = world_to_map(transformed[:,0], transformed[:,1], recMap)
+            ax.scatter(xs_map, ys_map, c='r', s=8, label='Best-fit scan')
+            mx, my = world_to_map(x, y, recMap)
+            ax.scatter(mx, my, c='g', s=60, marker='*', label='Estimated pose')
+
         ax.set_title('Map + LaserScan Overlay')
         ax.set_xlabel('Map X (pixels)')
         ax.set_ylabel('Map Y (pixels)')
