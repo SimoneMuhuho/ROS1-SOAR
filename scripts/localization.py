@@ -11,6 +11,8 @@ from sklearn import neighbors
 from matplotlib.colors import ListedColormap
 from sklearn.inspection import DecisionBoundaryDisplay
 import math
+from geometry_msgs.msg import PoseStamped, Quaternion
+import tf.transformations as tft
 
 # --- Retrieve static map ---
 def getMap() -> OccupancyGrid:
@@ -83,6 +85,7 @@ def localize_robot(scan_points, knn, free_cells):
     best_score = -1
     best_pose = None
 
+    scan_points = push_away(scan_points)
     for rx, ry in free_cells:
         scan_transformed = scan_points + np.array([rx, ry])
         predictions = knn.predict(scan_transformed)
@@ -93,6 +96,28 @@ def localize_robot(scan_points, knn, free_cells):
             best_pose = (rx, ry)
 
     return best_pose
+
+def push_away(scan_points, distance = 0.10):
+    r = np.linalg.norm(scan_points, axis=1)
+    r[r == 0] = 1e-6
+    r_new = r + distance
+    return scan_points * (r_new / r)[:, None]
+
+def publish_pose(robot_pose):
+    pose_msg = PoseStamped()
+    pose_msg.header.stamp = rospy.Time.now()
+    pose_msg.header.frame_id = "map"
+    
+    px, py = robot_pose
+    
+    pose_msg.pose.position.x = px
+    pose_msg.pose.position.y = py
+    pose_msg.pose.position.z = 0.0
+    
+    quat = tft.quaternion_from_euler(0, 0, 0)
+    pose_msg.pose.orientation = Quaternion(*quat)
+    
+    pose_pub.publish(pose_msg)
 
 
 # --- Initialize ROS node ---
@@ -179,10 +204,13 @@ for i in range(4):
     for j in range(4):
         starting_positions.append((i, j))
 
+pose_pub = rospy.Publisher("/robot_pose", PoseStamped, queue_size=10)
+
 while not rospy.is_shutdown():
     if scan_data is not None:
         # Compute the robot pose using the latest scan
-        robot_pose = localize_robot(scan_data, knn, starting_positions)
+        robot_pose = localize_robot(scan_data, knn, free_cells)
+        publish_pose(robot_pose)
 
         # Transform scan to world coordinates
         scan_world = transform_scan(scan_data, (robot_pose[0], robot_pose[1], 0.0))
