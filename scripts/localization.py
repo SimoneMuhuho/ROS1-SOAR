@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+##sed -i 's/\r$//' ~/catkin_ws/src/fhtw/ROS1-SOAR/scripts/localization.py
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.srv import GetMap

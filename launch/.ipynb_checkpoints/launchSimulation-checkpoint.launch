@@ -77,6 +77,7 @@
     <param name="base_frame_id"             value="base_footprint"/>
   </node-->
 <node pkg="ROS1-SOAR" type="localization.py" name="localization" output="screen" />
+<node pkg="ROS1-SOAR" type="planning.py" name="planning" output="screen" />
 
 </launch>
 
