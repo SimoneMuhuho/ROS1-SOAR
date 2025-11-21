@@ -2,166 +2,152 @@
 # -*- coding: utf-8 -*-
 
 import rospy
-from nav_msgs.srv import GetMap
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.srv import GetMap         # Service to fetch static occupancy grid map
+from geometry_msgs.msg import PoseStamped  # Message type for robot pose
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import deque
-import random
 
-# --- Coordinate conversions ---
-def map_to_world(mx, my, recMap):
-    res = recMap.info.resolution
-    ox = recMap.info.origin.position.x
-    oy = recMap.info.origin.position.y
-    wx = mx * res + ox
-    wy = my * res + oy
-    return wx, wy
+# -----------------------------------------------------------
+# Node container
+# -----------------------------------------------------------
+class Node:
+    def __init__(self, mx, my):
+        self.mx = mx                  # X coordinate in map pixels
+        self.my = my                  # Y coordinate in map pixels
+        self.neighbors = []           # List of connected nodes (edges)
 
-def world_to_map(wx, wy, recMap):
-    res = recMap.info.resolution
-    ox = recMap.info.origin.position.x
-    oy = recMap.info.origin.position.y
-    mx = int(round((wx - ox) / res))
-    my = int(round((wy - oy) / res))
-    return mx, my
-
-# --- Tree Node ---
-class TreeNode:
-    def __init__(self, mx, my, wx, wy):
-        self.mx = mx
-        self.my = my
-        self.wx = wx
-        self.wy = wy
-        self.parent = None
-        self.children = []
-        self.path_to_parent = [(mx, my)]
-
-# --- BFS pathfinder (4-connectivity) ---
-def bfs_path(grid, start, end):
-    h, w = grid.shape
-    visited = np.zeros_like(grid, dtype=bool)
-    parent = dict()
-    queue = deque([start])
-    visited[start[1], start[0]] = True
-
-    while queue:
-        x, y = queue.popleft()
-        if (x, y) == end:
-            path = []
-            while (x, y) != start:
-                path.append((x, y))
-                x, y = parent[(x, y)]
-            path.append(start)
-            path.reverse()
-            return path
-        for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < w and 0 <= ny < h and not visited[ny, nx] and grid[ny, nx] == 0:
-                visited[ny, nx] = True
-                parent[(nx, ny)] = (x, y)
-                queue.append((nx, ny))
-    return None
-
-# --- Global Planner Node ---
+# -----------------------------------------------------------
+# Global Planner Node
+# -----------------------------------------------------------
 class GlobalPlannerNode:
-    def __init__(self, max_nodes=15, corridor_width=5):
-        rospy.init_node("global_planner_diagonal_corridor", anonymous=True)
-        rospy.loginfo("Node 2 started: diagonal corridor tree.")
+    def __init__(self):
+        # Initialize the ROS node
+        rospy.init_node("global_planner_manual_connections")
 
-        # --- Load map ---
+        # Load the static map from ROS service
         self.map = self.load_map()
-        self.height = self.map.info.height
-        self.width = self.map.info.width
-        self.grid = np.array(self.map.data).reshape((self.height, self.width))
 
-        # --- Tree nodes ---
-        self.nodes = []
-        self.max_nodes = max_nodes
-        self.corridor_width = corridor_width
+        # Convert the map into a NumPy grid, store resolution and origin
+        self.grid, self.res, self.origin = self.process_map(self.map)
 
-        # --- Build tree along diagonal corridor ---
-        self.build_diagonal_corridor_tree()
-        self.visualize_tree()
+        # Create nodes in a 4x4 grid and a mapping from coordinates to node objects
+        self.nodes, self.coord_to_node = self.create_nodes(4, 4)
 
-    # --- Load map ---
-    def load_map(self) -> OccupancyGrid:
-        rospy.wait_for_service("static_map")
-        get_map = rospy.ServiceProxy("static_map", GetMap)
-        recMap = get_map()
-        return recMap.map
+        # Build the hardcoded tree connections
+        self.build_manual_tree()
 
-    # --- Build tree along diagonal corridor ---
-    def build_diagonal_corridor_tree(self):
-        # Map indices of start and end
-        mx_start, my_start = world_to_map(0.0, 0.0, self.map)
-        mx_end, my_end = world_to_map(3.0, 3.0, self.map)
+        # Subscribe to robot pose topic to know where the robot is
+        self.robot_pose = None
+        rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
 
-        # Generate all cells along the diagonal
-        num_samples = self.max_nodes * 5  # oversample to select free cells
-        xs = np.linspace(mx_start, mx_end, num_samples, dtype=int)
-        ys = np.linspace(my_start, my_end, num_samples, dtype=int)
+        # Visualize the map, tree, and robot position
+        self.visualize()
 
-        corridor_cells = []
-        for x, y in zip(xs, ys):
-            # Corridor: include cells around the diagonal
-            for dx in range(-self.corridor_width, self.corridor_width+1):
-                for dy in range(-self.corridor_width, self.corridor_width+1):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < self.width and 0 <= ny < self.height:
-                        if self.grid[ny, nx] == 0:
-                            corridor_cells.append((nx, ny))
+    # ---------------- Map Loading ----------------
+    def load_map(self):
+        rospy.wait_for_service("static_map")   # Wait until the service is available
+        get_map = rospy.ServiceProxy("static_map", GetMap)  # Create service proxy
+        return get_map().map                  # Call the service and return the map
 
-        # Remove duplicates
-        corridor_cells = list(set(corridor_cells))
+    def process_map(self, map_msg):
+        # Extract width, height, resolution, and origin of the map
+        w, h = map_msg.info.width, map_msg.info.height
+        res = map_msg.info.resolution
+        ox, oy = map_msg.info.origin.position.x, map_msg.info.origin.position.y
 
-        # Randomly pick max_nodes from corridor cells
-        selected_cells = random.sample(corridor_cells, min(self.max_nodes, len(corridor_cells)))
+        # Convert ROS map data (1D list) to 2D NumPy array
+        grid = np.array(map_msg.data).reshape((h, w))
 
-        # Sort cells roughly along diagonal for sequential connection
-        selected_cells.sort(key=lambda c: c[0]+c[1])
+        # Convert to binary: 0 = free, 1 = wall
+        grid = (grid != 0).astype(int)
+        return grid, res, (ox, oy)
 
-        previous_node = None
-        for mx, my in selected_cells:
-            wx, wy = map_to_world(mx, my, self.map)
-            new_node = TreeNode(mx, my, wx, wy)
-            if previous_node:
-                path = bfs_path(self.grid, (previous_node.mx, previous_node.my), (mx, my))
-                if path:
-                    new_node.parent = previous_node
-                    previous_node.children.append(new_node)
-                    new_node.path_to_parent = path
-            self.nodes.append(new_node)
-            previous_node = new_node
+    # ---------------- Node Creation ----------------
+    def create_nodes(self, cols, rows):
+        nodes = []
+        coord_to_node = {}
+        ox, oy = self.origin
+        res = self.res
 
-        rospy.loginfo(f"Diagonal corridor tree built with {len(self.nodes)} nodes.")
+        # Convert block coordinates (bx, by) to map pixel coordinates (mx, my)
+        def block_to_map(bx, by):
+            mx = int((bx * 1.0 - ox) / res)
+            my = int((by * 1.0 - oy) / res)
+            return mx, my
 
-    # --- Visualization ---
-    def visualize_tree(self):
-        plt.figure(figsize=(12,12))
-        plt.imshow(self.grid, cmap='gray', origin='lower')
+        # Create a grid of nodes
+        for y in range(rows):
+            for x in range(cols):
+                mx, my = block_to_map(x, y)   # Map coordinates
+                n = Node(mx, my)              # Create Node object
+                nodes.append(n)               # Add to node list
+                coord_to_node[(x, y)] = n    # Store in dict for easy lookup
 
-        # Draw edges
-        for node in self.nodes:
-            if node.path_to_parent:
-                px, py = zip(*node.path_to_parent)
-                plt.plot(px, py, c='red', linewidth=1)
+        return nodes, coord_to_node
 
-        # Draw nodes
-        xs = [node.mx for node in self.nodes]
-        ys = [node.my for node in self.nodes]
-        plt.scatter(xs, ys, s=50, c='blue', label='Tree nodes')
+    # ---------------- Hardcoded Tree ----------------
+    def build_manual_tree(self):
+        # Convenience variable
+        c = self.coord_to_node
 
-        # Draw start and end
-        plt.scatter([self.nodes[0].mx], [self.nodes[0].my], s=100, c='green', marker='o', label='Start (0,0)')
-        plt.scatter([self.nodes[-1].mx], [self.nodes[-1].my], s=100, c='magenta', marker='x', label='End (3,3)')
+        # Hardcoded connections between nodes to form the tree
+        c[(0,0)].neighbors.append(c[(1,0)])
+        c[(1,0)].neighbors.append(c[(1,1)])
+        c[(1,1)].neighbors.append(c[(0,1)])
+        c[(1,1)].neighbors.append(c[(1,2)])
+        c[(1,2)].neighbors.append(c[(1,3)])
+        c[(1,3)].neighbors.append(c[(0,3)])
+        c[(0,3)].neighbors.append(c[(0,2)])
+        c[(1,2)].neighbors.append(c[(2,2)])
+        c[(2,2)].neighbors.append(c[(2,3)])
+        c[(2,2)].neighbors.append(c[(3,2)])
+        c[(3,2)].neighbors.append(c[(3,1)])
+        c[(3,1)].neighbors.append(c[(3,0)])
+        c[(3,1)].neighbors.append(c[(2,1)])
+        c[(2,1)].neighbors.append(c[(2,0)])
+        c[(3,2)].neighbors.append(c[(3,3)])
 
-        plt.title("Diagonal corridor tree (~15 nodes, safe edges)")
-        plt.xlabel("X (grid cells)")
-        plt.ylabel("Y (grid cells)")
-        plt.legend()
+    # ---------------- Robot Pose Callback ----------------
+    def robot_pose_callback(self, msg):
+        # Store the latest robot pose from /robot_pose topic
+        self.robot_pose = msg.pose
+
+    # ---------------- Visualization ----------------
+    def visualize(self):
+        # Create a figure
+        plt.figure(figsize=(8,8))
+
+        # Show map in grayscale (walls dark, free space light)
+        plt.imshow(self.grid, cmap="Greys", origin="lower")
+
+        # Draw tree edges in blue
+        for n in self.nodes:
+            for nb in n.neighbors:
+                plt.plot([n.mx, nb.mx], [n.my, nb.my], 'dodgerblue', linewidth=2)
+
+        # Draw nodes as medium blue circles
+        xs = [n.mx for n in self.nodes]
+        ys = [n.my for n in self.nodes]
+        plt.scatter(xs, ys, s=150, c='mediumblue', label='Nodes')
+
+        # Draw robot as a red star if pose is known
+        if self.robot_pose:
+            rx = int((self.robot_pose.position.x - self.origin[0]) / self.res)
+            ry = int((self.robot_pose.position.y - self.origin[1]) / self.res)
+            plt.scatter(rx, ry, s=200, c='red', marker='*', label='Robot')
+
+        # Add a legend without duplicates
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys())
+
+        # Equal axis scaling for correct aspect
+        plt.axis('equal')
+        plt.title("Manual Node Tree with Robot Position")
         plt.show()
 
+
+# ---------------- Main ----------------
 if __name__ == "__main__":
-    node = GlobalPlannerNode(max_nodes=15, corridor_width=5)
-    rospy.spin()
+    node = GlobalPlannerNode()  # Instantiate the planner node
+    rospy.spin()                # Keep the ROS node alive to receive messages
