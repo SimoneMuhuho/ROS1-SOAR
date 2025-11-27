@@ -40,9 +40,6 @@ class GlobalPlannerNode:
         self.robot_pose = None
         rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
 
-        # Visualize the map, tree, and robot position
-        self.visualize()
-
     # ---------------- Map Loading ----------------
     def load_map(self):
         rospy.wait_for_service("static_map")   # Wait until the service is available
@@ -85,32 +82,37 @@ class GlobalPlannerNode:
 
         return nodes, coord_to_node
 
+    # ---------------- Add Bidirectional Edge ----------------
+    def add_edge(self, a, b):
+        if b not in a.neighbors:
+            a.neighbors.append(b)
+        if a not in b.neighbors:
+            b.neighbors.append(a)
     # ---------------- Hardcoded Tree ----------------
     def build_manual_tree(self):
-        # Convenience variable
         c = self.coord_to_node
 
-        # Hardcoded connections between nodes to form the tree
-        c[(0,0)].neighbors.append(c[(1,0)])
-        c[(1,0)].neighbors.append(c[(1,1)])
-        c[(1,1)].neighbors.append(c[(0,1)])
-        c[(1,1)].neighbors.append(c[(1,2)])
-        c[(1,2)].neighbors.append(c[(1,3)])
-        c[(1,3)].neighbors.append(c[(0,3)])
-        c[(0,3)].neighbors.append(c[(0,2)])
-        c[(1,2)].neighbors.append(c[(2,2)])
-        c[(2,2)].neighbors.append(c[(2,3)])
-        c[(2,2)].neighbors.append(c[(3,2)])
-        c[(3,2)].neighbors.append(c[(3,1)])
-        c[(3,1)].neighbors.append(c[(3,0)])
-        c[(3,1)].neighbors.append(c[(2,1)])
-        c[(2,1)].neighbors.append(c[(2,0)])
-        c[(3,2)].neighbors.append(c[(3,3)])
+        self.add_edge(c[(0,0)], c[(1,0)])
+        self.add_edge(c[(1,0)], c[(1,1)])
+        self.add_edge(c[(1,1)], c[(0,1)])
+        self.add_edge(c[(1,1)], c[(1,2)])
+        self.add_edge(c[(1,2)], c[(1,3)])
+        self.add_edge(c[(1,3)], c[(0,3)])
+        self.add_edge(c[(0,3)], c[(0,2)])
+        self.add_edge(c[(1,2)], c[(2,2)])
+        self.add_edge(c[(2,2)], c[(2,3)])
+        self.add_edge(c[(2,2)], c[(3,2)])
+        self.add_edge(c[(3,2)], c[(3,1)])
+        self.add_edge(c[(3,1)], c[(3,0)])
+        self.add_edge(c[(3,1)], c[(2,1)])
+        self.add_edge(c[(2,1)], c[(2,0)])
+        self.add_edge(c[(3,2)], c[(3,3)])
 
     # ---------------- Robot Pose Callback ----------------
     def robot_pose_callback(self, msg):
         # Store the latest robot pose from /robot_pose topic
         self.robot_pose = msg.pose
+        self.visualize()
 
     # ---------------- Visualization ----------------
     def visualize(self):
@@ -145,7 +147,6 @@ class GlobalPlannerNode:
         plt.axis('equal')
         plt.title("Manual Node Tree with Robot Position")
         plt.show()
-
 
 # ---------------- Main ----------------
 if __name__ == "__main__":
