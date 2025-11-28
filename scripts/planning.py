@@ -63,24 +63,25 @@ class GlobalPlannerNode:
     def create_nodes(self, cols, rows):
         nodes = []
         coord_to_node = {}
-        ox, oy = self.origin
-        res = self.res
-
-        # Convert block coordinates (bx, by) to map pixel coordinates (mx, my)
-        def block_to_map(bx, by):
-            mx = int((bx * 1.0 - ox) / res)
-            my = int((by * 1.0 - oy) / res)
-            return mx, my
 
         # Create a grid of nodes
         for y in range(rows):
             for x in range(cols):
-                mx, my = block_to_map(x, y)   # Map coordinates
+                mx, my = self.block_to_map(x, y)   # Map coordinates
                 n = Node(mx, my)              # Create Node object
                 nodes.append(n)               # Add to node list
                 coord_to_node[(x, y)] = n    # Store in dict for easy lookup
 
         return nodes, coord_to_node
+
+    # Convert block coordinates (bx, by) to map pixel coordinates (mx, my)
+    def block_to_map(self, bx, by):
+        ox, oy = self.origin
+        res = self.res
+        
+        mx = int((bx * 1.0 - ox) / res)
+        my = int((by * 1.0 - oy) / res)
+        return mx, my
 
     # ---------------- Add Bidirectional Edge ----------------
     def add_edge(self, a, b):
@@ -108,14 +109,23 @@ class GlobalPlannerNode:
         self.add_edge(c[(2,1)], c[(2,0)])
         self.add_edge(c[(3,2)], c[(3,3)])
 
+        for n in self.nodes:
+            print(f"Node at ({n.mx}, {n.my}) has neighbors:")
+            for nb in n.neighbors:
+                print(f"   → ({nb.mx}, {nb.my})")
+
     # ---------------- Robot Pose Callback ----------------
     def robot_pose_callback(self, msg):
         # Store the latest robot pose from /robot_pose topic
         self.robot_pose = msg.pose
+        print(self.robot_pose)
+        print(self.block_to_map(self.robot_pose.position.x, self.robot_pose.position.y))
         self.visualize()
 
     # ---------------- Visualization ----------------
     def visualize(self):
+        self.get_shortest_path(self.coord_to_node[(round(self.robot_pose.position.x),round(self.robot_pose.position.y))])
+        
         # Create a figure
         plt.figure(figsize=(8,8))
 
@@ -147,6 +157,43 @@ class GlobalPlannerNode:
         plt.axis('equal')
         plt.title("Manual Node Tree with Robot Position")
         plt.show()
+
+    def dfs(self, start_node, goal_node):
+        visited = set()
+        path = []
+    
+        def recurse(node):
+            if node in visited:
+                return False
+    
+            visited.add(node)
+            path.append(node)
+    
+            if node == goal_node:
+                return True
+    
+            for child in node.neighbors:
+                if recurse(child):
+                    return True
+    
+            # Backtrack
+            path.pop()
+            return False
+    
+        found = recurse(start_node)
+        return path if found else None
+
+    def get_shortest_path(self, start):
+        goal  = self.coord_to_node[(3,3)]
+        
+        path = self.dfs(start, goal)
+        if path:
+            print("DFS Path:")
+            for node in path:
+                print(node.mx, node.my)
+        else:
+            print("Goal not reachable")
+        
 
 # ---------------- Main ----------------
 if __name__ == "__main__":
