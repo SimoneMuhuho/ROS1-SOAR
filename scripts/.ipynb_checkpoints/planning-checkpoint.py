@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import rospy
-from nav_msgs.srv import GetMap         # Service to fetch static occupancy grid map
-from geometry_msgs.msg import PoseStamped  # Message type for robot pose
+from nav_msgs.srv import GetMap
+from geometry_msgs.msg import PoseStamped
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -12,75 +12,67 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------
 class Node:
     def __init__(self, mx, my):
-        self.mx = mx                  # X coordinate in map pixels
-        self.my = my                  # Y coordinate in map pixels
-        self.neighbors = []           # List of connected nodes (edges)
+        self.mx = mx
+        self.my = my
+        self.neighbors = []
 
 # -----------------------------------------------------------
 # Global Planner Node
 # -----------------------------------------------------------
 class GlobalPlannerNode:
     def __init__(self):
-        # Initialize the ROS node
+        # Initialize ROS node
         rospy.init_node("global_planner_manual_connections")
 
-        # Load the static map from ROS service
+        # Load the static map
         self.map = self.load_map()
 
-        # Convert the map into a NumPy grid, store resolution and origin
+        # Convert the map into a NumPy grid
         self.grid, self.res, self.origin = self.process_map(self.map)
 
-        # Create nodes in a 4x4 grid and a mapping from coordinates to node objects
+        # Create nodes and mapping
         self.nodes, self.coord_to_node = self.create_nodes(4, 4)
 
-        # Build the hardcoded tree connections
+        # Build manual tree
         self.build_manual_tree()
 
-        # Subscribe to robot pose topic to know where the robot is
+        # Robot pose
         self.robot_pose = None
+
+        # Subscribe to robot pose
         rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
 
     # ---------------- Map Loading ----------------
     def load_map(self):
-        rospy.wait_for_service("static_map")   # Wait until the service is available
-        get_map = rospy.ServiceProxy("static_map", GetMap)  # Create service proxy
-        return get_map().map                  # Call the service and return the map
+        rospy.wait_for_service("static_map")
+        get_map = rospy.ServiceProxy("static_map", GetMap)
+        return get_map().map
 
     def process_map(self, map_msg):
-        # Extract width, height, resolution, and origin of the map
         w, h = map_msg.info.width, map_msg.info.height
         res = map_msg.info.resolution
         ox, oy = map_msg.info.origin.position.x, map_msg.info.origin.position.y
-
-        # Convert ROS map data (1D list) to 2D NumPy array
         grid = np.array(map_msg.data).reshape((h, w))
-
-        # Convert to binary: 0 = free, 1 = wall
-        grid = (grid != 0).astype(int)
+        grid = (grid != 0).astype(int)  # 0=free, 1=wall
         return grid, res, (ox, oy)
 
     # ---------------- Node Creation ----------------
     def create_nodes(self, cols, rows):
         nodes = []
         coord_to_node = {}
-
-        # Create a grid of nodes
         for y in range(rows):
             for x in range(cols):
-                mx, my = self.block_to_map(x, y)   # Map coordinates
-                n = Node(mx, my)              # Create Node object
-                nodes.append(n)               # Add to node list
-                coord_to_node[(x, y)] = n    # Store in dict for easy lookup
-
+                mx, my = self.block_to_map(x, y)
+                n = Node(mx, my)
+                nodes.append(n)
+                coord_to_node[(x, y)] = n
         return nodes, coord_to_node
 
-    # Convert block coordinates (bx, by) to map pixel coordinates (mx, my)
     def block_to_map(self, bx, by):
         ox, oy = self.origin
         res = self.res
-        
-        mx = int((bx * 1.0 - ox) / res)
-        my = int((by * 1.0 - oy) / res)
+        mx = int((bx - ox) / res)
+        my = int((by - oy) / res)
         return mx, my
 
     # ---------------- Add Bidirectional Edge ----------------
@@ -89,10 +81,10 @@ class GlobalPlannerNode:
             a.neighbors.append(b)
         if a not in b.neighbors:
             b.neighbors.append(a)
+
     # ---------------- Hardcoded Tree ----------------
     def build_manual_tree(self):
         c = self.coord_to_node
-
         self.add_edge(c[(0,0)], c[(1,0)])
         self.add_edge(c[(1,0)], c[(1,1)])
         self.add_edge(c[(1,1)], c[(0,1)])
@@ -109,93 +101,97 @@ class GlobalPlannerNode:
         self.add_edge(c[(2,1)], c[(2,0)])
         self.add_edge(c[(3,2)], c[(3,3)])
 
-        for n in self.nodes:
-            print(f"Node at ({n.mx}, {n.my}) has neighbors:")
-            for nb in n.neighbors:
-                print(f"   → ({nb.mx}, {nb.my})")
-
     # ---------------- Robot Pose Callback ----------------
     def robot_pose_callback(self, msg):
-        # Store the latest robot pose from /robot_pose topic
         self.robot_pose = msg.pose
-        print(self.robot_pose)
-        print(self.block_to_map(self.robot_pose.position.x, self.robot_pose.position.y))
         self.visualize()
 
-    # ---------------- Visualization ----------------
-    def visualize(self):
-        self.get_shortest_path(self.coord_to_node[(round(self.robot_pose.position.x),round(self.robot_pose.position.y))])
-        
-        # Create a figure
-        plt.figure(figsize=(8,8))
-
-        # Show map in grayscale (walls dark, free space light)
-        plt.imshow(self.grid, cmap="Greys", origin="lower")
-
-        # Draw tree edges in blue
-        for n in self.nodes:
-            for nb in n.neighbors:
-                plt.plot([n.mx, nb.mx], [n.my, nb.my], 'dodgerblue', linewidth=2)
-
-        # Draw nodes as medium blue circles
-        xs = [n.mx for n in self.nodes]
-        ys = [n.my for n in self.nodes]
-        plt.scatter(xs, ys, s=150, c='mediumblue', label='Nodes')
-
-        # Draw robot as a red star if pose is known
-        if self.robot_pose:
-            rx = int((self.robot_pose.position.x - self.origin[0]) / self.res)
-            ry = int((self.robot_pose.position.y - self.origin[1]) / self.res)
-            plt.scatter(rx, ry, s=200, c='red', marker='*', label='Robot')
-
-        # Add a legend without duplicates
-        handles, labels = plt.gca().get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys())
-
-        # Equal axis scaling for correct aspect
-        plt.axis('equal')
-        plt.title("Manual Node Tree with Robot Position")
-        plt.show()
-
+    # ---------------- DFS ----------------
     def dfs(self, start_node, goal_node):
         visited = set()
         path = []
-    
+
         def recurse(node):
             if node in visited:
                 return False
-    
             visited.add(node)
             path.append(node)
-    
             if node == goal_node:
                 return True
-    
             for child in node.neighbors:
                 if recurse(child):
                     return True
-    
-            # Backtrack
             path.pop()
             return False
-    
+
         found = recurse(start_node)
         return path if found else None
 
-    def get_shortest_path(self, start):
-        goal  = self.coord_to_node[(3,3)]
-        
-        path = self.dfs(start, goal)
+    # ---------------- Visualization ----------------
+    def visualize(self):
+        # Determine starting node from robot position
+        rx = round(self.robot_pose.position.x)
+        ry = round(self.robot_pose.position.y)
+        start_node = self.coord_to_node.get((rx, ry), None)
+        goal_node = self.coord_to_node[(3,3)]
+        path = self.dfs(start_node, goal_node) if start_node else None
+
+        # ------------------- Figure Setup -------------------
+        plt.rcParams['figure.figsize'] = [7, 7]
+        fig, ax = plt.subplots()
+
+        # ------------------- Walls -------------------
+        wall_positions = np.argwhere(self.grid == 1)
+        ax.scatter(
+            wall_positions[:, 1], wall_positions[:, 0],
+            c='darkblue', alpha=1.0, s=6**2, label="Walls"
+        )
+
+        # ------------------- Nodes -------------------
+        node_positions = np.array([[n.mx, n.my] for n in self.nodes])
+        ax.scatter(
+            node_positions[:, 0],
+            node_positions[:, 1],
+            c='mediumblue', alpha=1.0, s=8**2, label="Nodes"
+        )
+
+        # ------------------- DFS Path -------------------
         if path:
-            print("DFS Path:")
-            for node in path:
-                print(node.mx, node.my)
-        else:
-            print("Goal not reachable")
-        
+            path_positions = np.array([[n.mx, n.my] for n in path])
+            ax.scatter(
+                path_positions[:, 0],
+                path_positions[:, 1],
+                c='green', alpha=1.0, s=8**2, label="DFS Path"
+            )
+            for idx in range(1, len(path_positions)):
+                x0, y0 = path_positions[idx-1]
+                x1, y1 = path_positions[idx]
+                ax.plot([x0, x1], [y0, y1], c='green', linewidth=2)
+
+        # ------------------- Robot -------------------
+        rx_px = int((self.robot_pose.position.x - self.origin[0]) / self.res)
+        ry_px = int((self.robot_pose.position.y - self.origin[1]) / self.res)
+        ax.scatter(rx_px, ry_px, c='red', s=15**2, marker='*', label="Robot Position")
+
+        # ------------------- Tree Edges -------------------
+        for n in self.nodes:
+            for nb in n.neighbors:
+                ax.plot([n.mx, nb.mx], [n.my, nb.my], c='dodgerblue', linewidth=1)
+
+        # ------------------- Axes & Grid -------------------
+        ax.set_xlabel("X-Coordinate [pixels]")
+        ax.set_ylabel("Y-Coordinate [pixels]")
+        ax.set_title("Found Path from Robot Position to Goal")
+        ax.set_xticks(np.arange(0, self.grid.shape[1], 1))
+        ax.set_yticks(np.arange(0, self.grid.shape[0], 1))
+        ax.grid(True)
+        ax.set_axisbelow(True)
+        ax.legend(loc='upper left', framealpha=0.8)  # up
+        ax.set_aspect('equal')
+        plt.show()
+
 
 # ---------------- Main ----------------
 if __name__ == "__main__":
-    node = GlobalPlannerNode()  # Instantiate the planner node
-    rospy.spin()                # Keep the ROS node alive to receive messages
+    node = GlobalPlannerNode()
+    rospy.spin()
