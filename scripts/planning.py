@@ -16,6 +16,9 @@ class Node:
         self.my = my
         self.neighbors = []
 
+    def __repr__(self):
+        return str(self.mx) + ',' + str(self.my)
+
 # -----------------------------------------------------------
 # Global Planner Node
 # -----------------------------------------------------------
@@ -68,6 +71,49 @@ class GlobalPlannerNode:
                 coord_to_node[(x, y)] = n
         return nodes, coord_to_node
 
+    def create_edges(self):
+        for node in self.nodes:
+            neighbors = self.get_row_or_column_neighbors(node)
+            # Exclude the node itself
+            neighbors = [n for n in neighbors if n != node]
+
+            if not neighbors:
+                continue
+
+            # Closest neighbor in x (same row)
+            row_neighbors = [n for n in neighbors if n.my == node.my]
+            if row_neighbors:
+                closest_x = min(row_neighbors, key=lambda n: abs(n.mx - node.mx))
+                if self.has_horizontal_edge(node, closest_x):
+                    self.add_edge(node, closest_x)
+
+            # Closest neighbor in y (same column)
+            col_neighbors = [n for n in neighbors if n.mx == node.mx]
+            if col_neighbors:
+                closest_y = min(col_neighbors, key=lambda n: abs(n.my - node.my))
+                if self.has_vertical_edge(node, closest_y):
+                    self.add_edge(node, closest_y)
+
+    def get_row_or_column_neighbors(self, node):
+        # Return all nodes sharing x or y, but not both
+        return [n for n in self.nodes if (n.mx == node.mx) ^ (n.my == node.my)]
+
+    def has_horizontal_edge(self, node1, node2):
+        assert node1.my == node2.my, "Nodes must be in same row"
+        y = node1.my
+        for x in range(min(node1.mx, node2.mx) + 1, max(node1.mx, node2.mx)):
+            if self.grid[y, x] == 1:
+                return False
+        return True
+
+    def has_vertical_edge(self, node1, node2):
+        assert node1.mx == node2.mx, "Nodes must be in same column"
+        x = node1.mx
+        for y in range(min(node1.my, node2.my) + 1, max(node1.my, node2.my)):
+            if self.grid[y, x] == 1:
+                return False
+        return True
+
     def block_to_map(self, bx, by):
         ox, oy = self.origin
         res = self.res
@@ -85,7 +131,7 @@ class GlobalPlannerNode:
     # ---------------- Hardcoded Tree ----------------
     def build_manual_tree(self):
         c = self.coord_to_node
-        self.add_edge(c[(0,0)], c[(1,0)])
+        '''self.add_edge(c[(0,0)], c[(1,0)])
         self.add_edge(c[(1,0)], c[(1,1)])
         self.add_edge(c[(1,1)], c[(0,1)])
         self.add_edge(c[(1,1)], c[(1,2)])
@@ -99,7 +145,7 @@ class GlobalPlannerNode:
         self.add_edge(c[(3,1)], c[(3,0)])
         self.add_edge(c[(3,1)], c[(2,1)])
         self.add_edge(c[(2,1)], c[(2,0)])
-        self.add_edge(c[(3,2)], c[(3,3)])
+        self.add_edge(c[(3,2)], c[(3,3)])'''
 
     # ---------------- Robot Pose Callback ----------------
     def robot_pose_callback(self, msg):
@@ -129,6 +175,8 @@ class GlobalPlannerNode:
 
     # ---------------- Visualization ----------------
     def visualize(self):
+        self.create_edges()
+        
         # Determine starting node from robot position
         rx = round(self.robot_pose.position.x)
         ry = round(self.robot_pose.position.y)
