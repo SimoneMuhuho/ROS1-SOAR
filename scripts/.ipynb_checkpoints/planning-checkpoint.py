@@ -133,7 +133,13 @@ class GlobalPlannerNode:
         rx = round(self.robot_pose.position.x)
         ry = round(self.robot_pose.position.y)
         start_node = self.coord_to_node.get((rx, ry), None)
-        goal_node = self.coord_to_node[(3,3)]
+        goal = rospy.get_param('~goal')
+        gx, gy = 3, 3
+        try:
+            gx, gy = list(map(int, goal.split(',')))
+        except Exception:
+            print('Goal invalid, using default 3,3')
+        goal_node = self.coord_to_node[(gx,gy)]
         path = self.dfs(start_node, goal_node) if start_node else None
 
         # ------------------- Figure Setup -------------------
