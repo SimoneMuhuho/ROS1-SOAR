@@ -6,6 +6,8 @@ from nav_msgs.srv import GetMap
 from geometry_msgs.msg import PoseStamped
 import numpy as np
 import matplotlib.pyplot as plt
+from nav_msgs.msg import Path
+import tf
 
 # -----------------------------------------------------------
 # Node container
@@ -38,12 +40,16 @@ class GlobalPlannerNode:
 
         # Build manual tree
         self.build_manual_tree()
-
+        
+        # Addition of variables for path and goal publishing
+        self.path_pub = rospy.Publisher('/global_planner/path', Path, queue_size=10)
+        self.pose_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
+        
         # Robot pose
         self.robot_pose = None
-
         # Subscribe to robot pose
         rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
+        listener = tf.TransformListener()
 
     # ---------------- Map Loading ----------------
     def load_map(self):
@@ -113,13 +119,21 @@ class GlobalPlannerNode:
             if self.grid[y, x] == 1:
                 return False
         return True
-
-    def block_to_map(self, bx, by):
+# ---------------- block creators ----------------
+    def block_to_map(self, bx, by): #used to convert coordinates for most of the code
         ox, oy = self.origin
         res = self.res
         mx = int((bx - ox) / res)
         my = int((by - oy) / res)
         return mx, my
+        
+    def map_to_block(self, mx, my):  #used for goal publishing, solves the issue caused by the code above
+        ox, oy = self.origin         #as well as the general idea used for nodes 
+        res = self.res
+        bx = (mx + 0.5) * res + ox
+        by = (my + 0.5) * res + oy
+        return bx, by
+
 
     # ---------------- Add Bidirectional Edge ----------------
     def add_edge(self, a, b):
@@ -151,28 +165,71 @@ class GlobalPlannerNode:
     def robot_pose_callback(self, msg):
         self.robot_pose = msg.pose
         self.visualize()
+    # ----------Goal pose creator------------------
+    def make_pose(self, x, y, yaw=0.0, frame="map"):
+        pose = PoseStamped()
+        pose.header.stamp = rospy.Time.now()
+        pose.header.frame_id = frame
+    
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        pose.pose.position.z = 0.0
+    
+        # Convert yaw → quaternion
+        q = tf.transformations.quaternion_from_euler(0, 0, yaw)
+        pose.pose.orientation.x = q[0]
+        pose.pose.orientation.y = q[1]
+        pose.pose.orientation.z = q[2]
+        pose.pose.orientation.w = q[3]
+
+        return pose
+# ----------path pose creator------------------
+    def publish_path(self, path):
+        msg = Path()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+    
+        for node in path:
+            wx, wy = self.map_to_block(node.mx, node.my)
+            pose = self.make_pose(wx, wy)
+            msg.poses.append(pose)
+    
+        self.path_pub.publish(msg)
+
 
     # ---------------- DFS ----------------
     def dfs(self, start_node, goal_node):
         visited = set()
         path = []
-
+    
         def recurse(node):
             if node in visited:
                 return False
             visited.add(node)
             path.append(node)
+    
             if node == goal_node:
                 return True
+    
             for child in node.neighbors:
                 if recurse(child):
                     return True
+    
             path.pop()
             return False
-
+    
         found = recurse(start_node)
-        return path if found else None
-
+    
+        # Publish poses if path is found
+        if found:
+            for node in path:
+                bx, by = self.map_to_block(node.mx,node.my)
+                self.publish_path(path)
+                self.pose_pub.publish(self.make_pose(bx,by))
+            return path   # ← RETURN **inside** dfs()
+    
+        else:
+            return None    # ← also inside
     # ---------------- Visualization ----------------
     def visualize(self):
         self.create_edges()
