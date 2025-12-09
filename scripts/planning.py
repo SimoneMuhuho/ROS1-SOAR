@@ -37,6 +37,9 @@ class GlobalPlannerNode:
 
         # Create nodes and mapping
         self.nodes, self.coord_to_node = self.create_nodes(4, 4)
+
+        # Create edges
+        self.create_edges()
         
         # Addition of variables for path and goal publishing
         self.path_pub = rospy.Publisher('/global_planner/path', Path, queue_size=10)
@@ -72,6 +75,7 @@ class GlobalPlannerNode:
                 n = Node(mx, my)
                 nodes.append(n)
                 coord_to_node[(x, y)] = n
+
         return nodes, coord_to_node
 
     def create_edges(self):
@@ -221,8 +225,6 @@ class GlobalPlannerNode:
             return None    # ← also inside
     # ---------------- Visualization ----------------
     def visualize(self):
-        self.create_edges()
-        
         # Determine starting node from robot position
         rx = round(self.robot_pose.position.x)
         ry = round(self.robot_pose.position.y)
