@@ -230,6 +230,74 @@ class GlobalPlannerNode:
     
         else:
             return None    # ← also inside
+    # ---------------- Manhattan Distance---------
+    
+    def manhattan_h(self,node, goal_node):
+        return abs(goal_node.mx - node.mx)+abs(goal_node.my - node.my)
+
+    
+    def sort_h(self,nodes):
+        lowest_cost=100000
+        chosen = None
+        goal = self.make_goal_node()
+        for node in nodes:
+            current = self.manhattan_h(node, goal)
+            if(current<lowest_cost):
+                lowest_cost = current
+                chosen = node
+                
+
+        return chosen
+    
+    # ----------------making a goal node dinamically---------
+    def make_goal_node(self):
+        goal = rospy.get_param('~goal')
+        gx, gy = 3, 3
+        try:
+            gx, gy = list(map(int, goal.split(',')))
+        except Exception:
+            print('Goal invalid, using default 3,3')
+        return self.coord_to_node[(gx,gy)]
+    # ----------------a*---------   
+    def a_star(self, start_node, goal_node):
+        open_set = set()  #used to pool nodes 
+        closed_set = set() # used to explore nodes 
+        parent = {} # array that is going to contain paths to father nodes 
+        open_set.add(start_node)
+        goal = goal_node
+        found = False
+        while open_set:
+            current = self.sort_h(open_set) # iterates over the current set of nodes to see which one is the best to move on next 
+            if current == goal:
+                found = True
+                break
+            open_set.remove(current) 
+            closed_set.add(current) # adds the node to the select 
+            for neighbor in current.neighbors:
+                if neighbor in closed_set:
+                    continue
+                if neighbor not in open_set:
+                    open_set.add(neighbor) # this step allows us to ad more nodes to the sampleing set and iterate over more nodes
+                    parent[neighbor] = current # updates the partent list of all neighbors of the node to recognise the current node as its parent 
+        # path reconstruction
+        if found:
+            path = []
+            node = goal
+            while node != start_node:
+                path.append(node)
+                node = parent[node] # draws the next node that is going to be used in the path in the revers other 
+            path.append(start_node)
+            path.reverse() #reverses the path to source to destination 
+    
+            # Pubblicazione ROS
+            self.publish_path(path)
+            for node in path:
+                bx, by = self.map_to_block(node.mx, node.my)
+                self.pose_pub.publish(self.make_pose(bx, by))
+    
+            return path
+        else:
+            return None
     # ---------------- Visualization ----------------
     def visualize(self):
         self.create_edges()
@@ -238,14 +306,8 @@ class GlobalPlannerNode:
         rx = round(self.robot_pose.position.x)
         ry = round(self.robot_pose.position.y)
         start_node = self.coord_to_node.get((rx, ry), None)
-        goal = rospy.get_param('~goal')
-        gx, gy = 3, 3
-        try:
-            gx, gy = list(map(int, goal.split(',')))
-        except Exception:
-            print('Goal invalid, using default 3,3')
-        goal_node = self.coord_to_node[(gx,gy)]
-        path = self.dfs(start_node, goal_node) if start_node else None
+        goal_node = self.make_goal_node()
+        path = self.a_star(start_node, goal_node) if start_node else None
 
         # ------------------- Figure Setup -------------------
         plt.rcParams['figure.figsize'] = [7, 7]
@@ -266,13 +328,13 @@ class GlobalPlannerNode:
             c='mediumblue', alpha=1.0, s=8**2, label="Nodes"
         )
 
-        # ------------------- DFS Path -------------------
+        # ------------------- A* Path -------------------
         if path:
             path_positions = np.array([[n.mx, n.my] for n in path])
             ax.scatter(
                 path_positions[:, 0],
                 path_positions[:, 1],
-                c='green', alpha=1.0, s=8**2, label="DFS Path"
+                c='green', alpha=1.0, s=8**2, label="A* Path"
             )
             for idx in range(1, len(path_positions)):
                 x0, y0 = path_positions[idx-1]
