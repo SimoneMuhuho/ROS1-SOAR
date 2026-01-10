@@ -23,7 +23,9 @@ scan_data = None
 pose_pub = None
 
 
+# -----------------------------------------------------------
 # ROS utilities
+# -----------------------------------------------------------
 
 def init_ros():
     """
@@ -103,7 +105,9 @@ def publish_pose(robot_pose):
     pose_pub.publish(msg)
 
 
+# -----------------------------------------------------------
 # Coordinate transforms
+# -----------------------------------------------------------
 
 def map_to_world(mx, my, rec_map):
     """
@@ -160,7 +164,9 @@ def transform_scan(scan_points, robot_pose):
     return (R @ scan_points.T).T + np.array([x, y])
 
 
+# -----------------------------------------------------------
 # Localization logic
+# -----------------------------------------------------------
 
 def push_away(scan_points, distance=0.10):
     """
@@ -214,7 +220,9 @@ def localize_robot(scan_points, knn, free_cells):
     return best_pose
 
 
+# -----------------------------------------------------------
 # Map & ML preparation
+# -----------------------------------------------------------
 
 def build_map_array(rec_map):
     """
@@ -283,7 +291,9 @@ def train_knn(X, y):
     return knn
 
 
+# -----------------------------------------------------------
 # Visualization
+# -----------------------------------------------------------
 
 def visualize_knn(knn, X):
     """
@@ -351,7 +361,9 @@ def visualization_loop(map_array, rec_map, knn, free_cells):
     plt.show()
 
 
+# -----------------------------------------------------------
 # Main
+# -----------------------------------------------------------
 
 def main():
     """

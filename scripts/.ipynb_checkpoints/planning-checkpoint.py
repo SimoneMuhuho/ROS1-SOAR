@@ -145,21 +145,6 @@ class GlobalPlannerNode:
     # ---------------- Hardcoded Tree ----------------
     def build_manual_tree(self):
         c = self.coord_to_node
-        '''self.add_edge(c[(0,0)], c[(1,0)])
-        self.add_edge(c[(1,0)], c[(1,1)])
-        self.add_edge(c[(1,1)], c[(0,1)])
-        self.add_edge(c[(1,1)], c[(1,2)])
-        self.add_edge(c[(1,2)], c[(1,3)])
-        self.add_edge(c[(1,3)], c[(0,3)])
-        self.add_edge(c[(0,3)], c[(0,2)])
-        self.add_edge(c[(1,2)], c[(2,2)])
-        self.add_edge(c[(2,2)], c[(2,3)])
-        self.add_edge(c[(2,2)], c[(3,2)])
-        self.add_edge(c[(3,2)], c[(3,1)])
-        self.add_edge(c[(3,1)], c[(3,0)])
-        self.add_edge(c[(3,1)], c[(2,1)])
-        self.add_edge(c[(2,1)], c[(2,0)])
-        self.add_edge(c[(3,2)], c[(3,3)])'''
 
     # ---------------- Robot Pose Callback ----------------
     def robot_pose_callback(self, msg):
