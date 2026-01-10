@@ -9,288 +9,357 @@ import matplotlib.pyplot as plt
 from nav_msgs.msg import Path
 import tf
 
-
 # -----------------------------------------------------------
 # Node container
 # -----------------------------------------------------------
 class Node:
-    def __init__(self, map_x, map_y):
-        self.map_x = map_x
-        self.map_y = map_y
+    def __init__(self, mx, my):
+        self.mx = mx
+        self.my = my
         self.neighbors = []
 
     def __repr__(self):
-        return f"{self.map_x},{self.map_y}"
-
+        return str(self.mx) + ',' + str(self.my)
 
 # -----------------------------------------------------------
 # Global Planner Node
 # -----------------------------------------------------------
 class GlobalPlannerNode:
     def __init__(self):
+        # Initialize ROS node
         rospy.init_node("global_planner_manual_connections")
 
         # Load the static map
-        self.map_message = self.load_map()
+        self.map = self.load_map()
 
-        # Convert map message to a grid
-        self.occupancy_grid, self.resolution, self.map_origin = self.process_map(self.map_message)
+        # Convert the map into a NumPy grid
+        self.grid, self.res, self.origin = self.process_map(self.map)
 
-        # Create graph nodes
-        self.nodes, self.grid_coord_to_node = self.create_nodes(num_columns=4, num_rows=4)
+        # Create nodes and mapping
+        self.nodes, self.coord_to_node = self.create_nodes(4, 4)
 
-        # Build graph connections
-        self.create_edges()
-
-        # Publishers
-        self.path_publisher = rospy.Publisher('/global_planner/path', Path, queue_size=10)
-        self.goal_pose_publisher = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
-
+        # Build manual tree
+        self.build_manual_tree()
+        
+        # Addition of variables for path and goal publishing
+        self.path_pub = rospy.Publisher('/global_planner/path', Path, queue_size=10)
+        self.pose_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
+        
         # Robot pose
         self.robot_pose = None
+        # Subscribe to robot pose
         rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
-
-        # TF listener
-        self.tf_listener = tf.TransformListener()
+        listener = tf.TransformListener()
 
     # ---------------- Map Loading ----------------
     def load_map(self):
         rospy.wait_for_service("static_map")
-        get_map_service = rospy.ServiceProxy("static_map", GetMap)
-        return get_map_service().map
+        get_map = rospy.ServiceProxy("static_map", GetMap)
+        return get_map().map
 
-    def process_map(self, map_message):
-        width = map_message.info.width
-        height = map_message.info.height
-        resolution = map_message.info.resolution
-
-        origin_x = map_message.info.origin.position.x
-        origin_y = map_message.info.origin.position.y
-
-        occupancy_array = np.array(map_message.data).reshape((height, width))
-        occupancy_array = (occupancy_array != 0).astype(int)   # 0 = free, 1 = occupied
-
-        return occupancy_array, resolution, (origin_x, origin_y)
+    def process_map(self, map_msg):
+        w, h = map_msg.info.width, map_msg.info.height
+        res = map_msg.info.resolution
+        ox, oy = map_msg.info.origin.position.x, map_msg.info.origin.position.y
+        grid = np.array(map_msg.data).reshape((h, w))
+        grid = (grid != 0).astype(int)  # 0=free, 1=wall
+        return grid, res, (ox, oy)
 
     # ---------------- Node Creation ----------------
-    def create_nodes(self, num_columns, num_rows):
+    def create_nodes(self, cols, rows):
         nodes = []
-        grid_coord_to_node = {}
-
-        for row in range(num_rows):
-            for col in range(num_columns):
-                map_x, map_y = self.block_to_map(col, row)
-                node = Node(map_x, map_y)
-                nodes.append(node)
-                grid_coord_to_node[(col, row)] = node
-
-        return nodes, grid_coord_to_node
+        coord_to_node = {}
+        for y in range(rows):
+            for x in range(cols):
+                mx, my = self.block_to_map(x, y)
+                n = Node(mx, my)
+                nodes.append(n)
+                coord_to_node[(x, y)] = n
+        return nodes, coord_to_node
 
     def create_edges(self):
         for node in self.nodes:
-            potential_neighbors = self.get_row_or_column_neighbors(node)
+            neighbors = self.get_row_or_column_neighbors(node)
+            # Exclude the node itself
+            neighbors = [n for n in neighbors if n != node]
 
-            # Exclude itself
-            potential_neighbors = [nbr for nbr in potential_neighbors if nbr != node]
-
-            if not potential_neighbors:
+            if not neighbors:
                 continue
 
-            # --- closest neighbor horizontally ---
-            horizontal_neighbors = [nbr for nbr in potential_neighbors if nbr.map_y == node.map_y]
-            if horizontal_neighbors:
-                closest_horizontal = min(horizontal_neighbors, key=lambda nbr: abs(nbr.map_x - node.map_x))
-                if self.path_clear_horizontal(node, closest_horizontal):
-                    self.add_edge(node, closest_horizontal)
+            # Closest neighbor in x (same row)
+            row_neighbors = [n for n in neighbors if n.my == node.my]
+            if row_neighbors:
+                closest_x = min(row_neighbors, key=lambda n: abs(n.mx - node.mx))
+                if self.has_horizontal_edge(node, closest_x):
+                    self.add_edge(node, closest_x)
 
-            # --- closest neighbor vertically ---
-            vertical_neighbors = [nbr for nbr in potential_neighbors if nbr.map_x == node.map_x]
-            if vertical_neighbors:
-                closest_vertical = min(vertical_neighbors, key=lambda nbr: abs(nbr.map_y - node.map_y))
-                if self.path_clear_vertical(node, closest_vertical):
-                    self.add_edge(node, closest_vertical)
+            # Closest neighbor in y (same column)
+            col_neighbors = [n for n in neighbors if n.mx == node.mx]
+            if col_neighbors:
+                closest_y = min(col_neighbors, key=lambda n: abs(n.my - node.my))
+                if self.has_vertical_edge(node, closest_y):
+                    self.add_edge(node, closest_y)
 
     def get_row_or_column_neighbors(self, node):
-        # match either X OR Y, but not both
-        return [
-            nbr for nbr in self.nodes
-            if (nbr.map_x == node.map_x) ^ (nbr.map_y == node.map_y)
-        ]
+        # Return all nodes sharing x or y, but not both
+        return [n for n in self.nodes if (n.mx == node.mx) ^ (n.my == node.my)]
 
-    def path_clear_horizontal(self, node_a, node_b):
-        assert node_a.map_y == node_b.map_y
-        y = node_a.map_y
-
-        for x in range(min(node_a.map_x, node_b.map_x) + 1,
-                       max(node_a.map_x, node_b.map_x)):
-            if self.occupancy_grid[y, x] == 1:
+    def has_horizontal_edge(self, node1, node2):
+        assert node1.my == node2.my, "Nodes must be in same row"
+        y = node1.my
+        for x in range(min(node1.mx, node2.mx) + 1, max(node1.mx, node2.mx)):
+            if self.grid[y, x] == 1:
                 return False
-
         return True
 
-    def path_clear_vertical(self, node_a, node_b):
-        assert node_a.map_x == node_b.map_x
-        x = node_a.map_x
-
-        for y in range(min(node_a.map_y, node_b.map_y) + 1,
-                       max(node_a.map_y, node_b.map_y)):
-            if self.occupancy_grid[y, x] == 1:
+    def has_vertical_edge(self, node1, node2):
+        assert node1.mx == node2.mx, "Nodes must be in same column"
+        x = node1.mx
+        for y in range(min(node1.my, node2.my) + 1, max(node1.my, node2.my)):
+            if self.grid[y, x] == 1:
                 return False
-
         return True
+# ---------------- block creators ----------------
+    def block_to_map(self, bx, by): #used to convert coordinates for most of the code
+        ox, oy = self.origin
+        res = self.res
+        mx = int((bx - ox) / res)
+        my = int((by - oy) / res)
+        return mx, my
+        
+    def map_to_block(self, mx, my):  #used for goal publishing, solves the issue caused by the code above
+        ox, oy = self.origin         #as well as the general idea used for nodes 
+        res = self.res
+        bx = (mx + 0.5) * res + ox
+        by = (my + 0.5) * res + oy
+        return bx, by
 
-    # ---------------- Coordinate Conversion ----------------
-    def block_to_map(self, block_x, block_y):
-        origin_x, origin_y = self.map_origin
-        resolution = self.resolution
-
-        map_x = int((block_x - origin_x) / resolution)
-        map_y = int((block_y - origin_y) / resolution)
-        return map_x, map_y
-
-    def map_to_block(self, map_x, map_y):
-        origin_x, origin_y = self.map_origin
-        resolution = self.resolution
-
-        block_x = (map_x + 0.5) * resolution + origin_x
-        block_y = (map_y + 0.5) * resolution + origin_y
-        return block_x, block_y
 
     # ---------------- Add Bidirectional Edge ----------------
-    def add_edge(self, node_a, node_b):
-        if node_b not in node_a.neighbors:
-            node_a.neighbors.append(node_b)
-        if node_a not in node_b.neighbors:
-            node_b.neighbors.append(node_a)
+    def add_edge(self, a, b):
+        if b not in a.neighbors:
+            a.neighbors.append(b)
+        if a not in b.neighbors:
+            b.neighbors.append(a)
+
+    # ---------------- Hardcoded Tree ----------------
+    def build_manual_tree(self):
+        c = self.coord_to_node
+        '''self.add_edge(c[(0,0)], c[(1,0)])
+        self.add_edge(c[(1,0)], c[(1,1)])
+        self.add_edge(c[(1,1)], c[(0,1)])
+        self.add_edge(c[(1,1)], c[(1,2)])
+        self.add_edge(c[(1,2)], c[(1,3)])
+        self.add_edge(c[(1,3)], c[(0,3)])
+        self.add_edge(c[(0,3)], c[(0,2)])
+        self.add_edge(c[(1,2)], c[(2,2)])
+        self.add_edge(c[(2,2)], c[(2,3)])
+        self.add_edge(c[(2,2)], c[(3,2)])
+        self.add_edge(c[(3,2)], c[(3,1)])
+        self.add_edge(c[(3,1)], c[(3,0)])
+        self.add_edge(c[(3,1)], c[(2,1)])
+        self.add_edge(c[(2,1)], c[(2,0)])
+        self.add_edge(c[(3,2)], c[(3,3)])'''
 
     # ---------------- Robot Pose Callback ----------------
-    def robot_pose_callback(self, pose_message):
-        self.robot_pose = pose_message.pose
+    def robot_pose_callback(self, msg):
+        self.robot_pose = msg.pose
         self.visualize()
-
-    # ---------- Create Goal Node ------------------
-    def get_goal_node(self):
-        goal_param = rospy.get_param('~goal')
-        goal_col, goal_row = 3, 3
-
-        try:
-            goal_col, goal_row = list(map(int, goal_param.split(',')))
-        except Exception:
-            print("Invalid goal parameter, using default (3,3)")
-
-        return self.grid_coord_to_node[(goal_col, goal_row)]
-
-    # ---------- Create PoseStamped ------------------
-    def make_pose(self, x_world, y_world, yaw=0.0, frame="map"):
+    # ----------Goal pose creator------------------
+    def make_pose(self, x, y, yaw=0.0, frame="map"):
         pose = PoseStamped()
         pose.header.stamp = rospy.Time.now()
         pose.header.frame_id = frame
-
-        pose.pose.position.x = float(x_world)
-        pose.pose.position.y = float(y_world)
+    
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
         pose.pose.position.z = 0.0
-
-        quat = tf.transformations.quaternion_from_euler(0, 0, yaw)
-        pose.pose.orientation.x = quat[0]
-        pose.pose.orientation.y = quat[1]
-        pose.pose.orientation.z = quat[2]
-        pose.pose.orientation.w = quat[3]
+    
+        # Convert yaw → quaternion
+        q = tf.transformations.quaternion_from_euler(0, 0, yaw)
+        pose.pose.orientation.x = q[0]
+        pose.pose.orientation.y = q[1]
+        pose.pose.orientation.z = q[2]
+        pose.pose.orientation.w = q[3]
 
         return pose
+# ----------path pose creator------------------
+    def publish_path(self, path):
+        msg = Path()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = "map"
+    
+        for node in path:
+            wx, wy = self.map_to_block(node.mx, node.my)
+            pose = self.make_pose(wx, wy)
+            msg.poses.append(pose)
+    
+        self.path_pub.publish(msg)
 
-    # ---------- Publish Path ------------------
-    def publish_path(self, node_path):
-        path_message = Path()
-        path_message.header.stamp = rospy.Time.now()
-        path_message.header.frame_id = "map"
 
-        for node in node_path:
-            world_x, world_y = self.map_to_block(node.map_x, node.map_y)
-            pose = self.make_pose(world_x, world_y)
-            path_message.poses.append(pose)
-
-        self.path_publisher.publish(path_message)
-
-    # ---------------- DFS Algorithm ----------------
+    # ---------------- DFS ----------------
     def dfs(self, start_node, goal_node):
-        visited_nodes = set()
-        current_path = []
-
-        def traverse(current_node):
-            if current_node in visited_nodes:
+        visited = set()
+        path = []
+    
+        def recurse(node):
+            if node in visited:
                 return False
-
-            visited_nodes.add(current_node)
-            current_path.append(current_node)
-
-            if current_node == goal_node:
+            visited.add(node)
+            path.append(node)
+    
+            if node == goal_node:
                 return True
-
-            for neighbor in current_node.neighbors:
-                if traverse(neighbor):
+    
+            for child in node.neighbors:
+                if recurse(child):
                     return True
-
-            current_path.pop()
+    
+            path.pop()
             return False
-
-        found = traverse(start_node)
-
+    
+        found = recurse(start_node)
+    
+        # Publish poses if path is found
         if found:
-            for node in current_path:
-                world_x, world_y = self.map_to_block(node.map_x, node.map_y)
-                self.publish_path(current_path)
-                self.goal_pose_publisher.publish(self.make_pose(world_x, world_y))
-            return current_path
+            for node in path:
+                bx, by = self.map_to_block(node.mx,node.my)
+                self.publish_path(path)
+                self.pose_pub.publish(self.make_pose(bx,by))
+            return path   # ← RETURN **inside** dfs()
+    
+        else:
+            return None    # ← also inside
+    # ---------------- Manhattan Distance---------
+    
+    def manhattan_h(self,node, goal_node):
+        return abs(goal_node.mx - node.mx)+abs(goal_node.my - node.my)
 
-        return None
+    
+    def sort_h(self,nodes):
+        lowest_cost=100000
+        chosen = None
+        goal = self.make_goal_node()
+        for node in nodes:
+            current = self.manhattan_h(node, goal)
+            if(current<lowest_cost):
+                lowest_cost = current
+                chosen = node
+                
 
+        return chosen
+    
+    # ----------------making a goal node dinamically---------
+    def make_goal_node(self):
+        goal = rospy.get_param('~goal')
+        gx, gy = 3, 3
+        try:
+            gx, gy = list(map(int, goal.split(',')))
+        except Exception:
+            print('Goal invalid, using default 3,3')
+        return self.coord_to_node[(gx,gy)]
+    # ----------------a*---------   
+    def a_star(self, start_node, goal_node):
+        open_set = set()  #used to pool nodes 
+        closed_set = set() # used to explore nodes 
+        parent = {} # array that is going to contain paths to father nodes 
+        open_set.add(start_node)
+        goal = goal_node
+        found = False
+        while open_set:
+            current = self.sort_h(open_set) # iterates over the current set of nodes to see which one is the best to move on next 
+            if current == goal:
+                found = True
+                break
+            open_set.remove(current) 
+            closed_set.add(current) # adds the node to the select 
+            for neighbor in current.neighbors:
+                if neighbor in closed_set:
+                    continue
+                if neighbor not in open_set:
+                    open_set.add(neighbor) # this step allows us to ad more nodes to the sampleing set and iterate over more nodes
+                    parent[neighbor] = current # updates the partent list of all neighbors of the node to recognise the current node as its parent 
+        # path reconstruction
+        if found:
+            path = []
+            node = goal
+            while node != start_node:
+                path.append(node)
+                node = parent[node] # draws the next node that is going to be used in the path in the revers other 
+            path.append(start_node)
+            path.reverse() #reverses the path to source to destination 
+    
+            # Pubblicazione ROS
+            self.publish_path(path)
+            for node in path:
+                bx, by = self.map_to_block(node.mx, node.my)
+                self.pose_pub.publish(self.make_pose(bx, by))
+    
+            return path
+        else:
+            return None
     # ---------------- Visualization ----------------
     def visualize(self):
-        # compute start node
-        robot_map_x = round(self.robot_pose.position.x)
-        robot_map_y = round(self.robot_pose.position.y)
+        self.create_edges()
+        
+        # Determine starting node from robot position
+        rx = round(self.robot_pose.position.x)
+        ry = round(self.robot_pose.position.y)
+        start_node = self.coord_to_node.get((rx, ry), None)
+        goal_node = self.make_goal_node()
+        path = self.a_star(start_node, goal_node) if start_node else None
 
-        start_node = self.grid_coord_to_node.get((robot_map_x, robot_map_y))
-        goal_node = self.get_goal_node()
-
-        node_path = self.dfs(start_node, goal_node) if start_node else None
-
+        # ------------------- Figure Setup -------------------
         plt.rcParams['figure.figsize'] = [7, 7]
         fig, ax = plt.subplots()
 
-        # Walls
-        wall_coords = np.argwhere(self.occupancy_grid == 1)
-        ax.scatter(wall_coords[:, 1], wall_coords[:, 0], c='darkblue', s=36, label="Walls")
+        # ------------------- Walls -------------------
+        wall_positions = np.argwhere(self.grid == 1)
+        ax.scatter(
+            wall_positions[:, 1], wall_positions[:, 0],
+            c='darkblue', alpha=1.0, s=6**2, label="Walls"
+        )
 
-        # Node points
-        graph_coords = np.array([[n.map_x, n.map_y] for n in self.nodes])
-        ax.scatter(graph_coords[:, 0], graph_coords[:, 1], c='mediumblue', s=64, label="Nodes")
+        # ------------------- Nodes -------------------
+        node_positions = np.array([[n.mx, n.my] for n in self.nodes])
+        ax.scatter(
+            node_positions[:, 0],
+            node_positions[:, 1],
+            c='mediumblue', alpha=1.0, s=8**2, label="Nodes"
+        )
 
-        # Path found
-        if node_path:
-            path_coords = np.array([[n.map_x, n.map_y] for n in node_path])
-            ax.scatter(path_coords[:, 0], path_coords[:, 1], c='green', s=64, label="DFS Path")
-
-            for i in range(1, len(path_coords)):
-                x0, y0 = path_coords[i - 1]
-                x1, y1 = path_coords[i]
+        # ------------------- A* Path -------------------
+        if path:
+            path_positions = np.array([[n.mx, n.my] for n in path])
+            ax.scatter(
+                path_positions[:, 0],
+                path_positions[:, 1],
+                c='green', alpha=1.0, s=8**2, label="A* Path"
+            )
+            for idx in range(1, len(path_positions)):
+                x0, y0 = path_positions[idx-1]
+                x1, y1 = path_positions[idx]
                 ax.plot([x0, x1], [y0, y1], c='green', linewidth=2)
 
-        # Robot
-        robot_grid_x = int((self.robot_pose.position.x - self.map_origin[0]) / self.resolution)
-        robot_grid_y = int((self.robot_pose.position.y - self.map_origin[1]) / self.resolution)
-        ax.scatter(robot_grid_x, robot_grid_y, c='red', s=225, marker='*', label="Robot")
+        # ------------------- Robot -------------------
+        rx_px = int((self.robot_pose.position.x - self.origin[0]) / self.res)
+        ry_px = int((self.robot_pose.position.y - self.origin[1]) / self.res)
+        ax.scatter(rx_px, ry_px, c='red', s=15**2, marker='*', label="Robot Position")
 
-        # Edges
+        # ------------------- Tree Edges -------------------
         for n in self.nodes:
-            for neighbor in n.neighbors:
-                ax.plot([n.map_x, neighbor.map_x], [n.map_y, neighbor.map_y], c='dodgerblue', linewidth=1)
+            for nb in n.neighbors:
+                ax.plot([n.mx, nb.mx], [n.my, nb.my], c='dodgerblue', linewidth=1)
 
-        ax.set_xlabel("X [map pixels]")
-        ax.set_ylabel("Y [map pixels]")
-        ax.set_title("Path from Robot to Goal")
+        # ------------------- Axes & Grid -------------------
+        ax.set_xlabel("X-Coordinate [pixels]")
+        ax.set_ylabel("Y-Coordinate [pixels]")
+        ax.set_title("Found Path from Robot Position to Goal")
+        ax.set_xticks(np.arange(0, self.grid.shape[1], 1))
+        ax.set_yticks(np.arange(0, self.grid.shape[0], 1))
         ax.grid(True)
-        ax.legend()
+        ax.set_axisbelow(True)
+        ax.legend(loc='upper left', framealpha=0.8)  # up
         ax.set_aspect('equal')
         plt.show()
 
