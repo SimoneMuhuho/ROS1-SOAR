@@ -233,16 +233,27 @@ class GlobalPlannerNode:
                 
 
         return chosen
+
+    def parse_goal(goal):
+        gx, gy = map(int, goal.split(','))
+    
+        if not (0 <= gx <= 3 and 0 <= gy <= 3):
+            raise ValueError("Goal invalid")
+    
+        return gx, gy
     
     # ----------------making a goal node dinamically---------
     def make_goal_node(self):
         goal = rospy.get_param('~goal')
         gx, gy = 3, 3
+    
         try:
-            gx, gy = list(map(int, goal.split(',')))
+            gx, gy = parse_goal(goal)
         except Exception:
             print('Goal invalid, using default 3,3')
-        return self.coord_to_node[(gx,gy)]
+    
+        return self.coord_to_node[(gx, gy)]
+
     # ----------------a*---------   
     def a_star(self, start_node, goal_node):
         open_set = set()  #used to pool nodes 
