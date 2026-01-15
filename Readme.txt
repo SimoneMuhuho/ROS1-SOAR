@@ -10,8 +10,8 @@ The project consists of one launch file and two custom ROS nodes. The launch fil
 To run the project in the online JupyterLab environment, make sure ROS1 and the TurtleBot3 packages are properly sourced. First source the ROS and workspace setup files, then set the TurtleBot3 model (for example, burger). The project can then be started using the roslaunch command with the provided launch file
 
 1)open a konsole and after gettng into the launch directory type
-	-sed -i 's/\r$//' ~/catkin_ws/src/fhtw/ROS1-SOAR/scripts/localization.py
-	-sed -i 's/\r$//' ~/catkin_ws/src/fhtw/ROS1-SOAR/scripts/planning.py
+	- sed -i 's/\r$//' ~/catkin_ws/src/fhtw/ros1_soar/scripts/localization.py
+	- sed -i 's/\r$//' ~/catkin_ws/src/fhtw/ros1_soar/scripts/planning.py
 These are needed to make the "\n" and "/" otherwise known as the "new line" commands
 consistent across operating systems
 
