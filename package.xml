@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>ROS1-SOAR</name>
+  <name>ros1_soar</name>
   <version>0.0.0</version>
   <description>The soar_maze_escape package</description>
 

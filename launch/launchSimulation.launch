@@ -11,7 +11,7 @@
   <arg name="goal" default="3,3"/>
 
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
-    <arg name="world_name" value="$(find ROS1-SOAR)/worlds/default.world"/>
+    <arg name="world_name" value="$(find ros1_soar)/worlds/default.world"/>
     <arg name="paused" value="false"/>
     <arg name="use_sim_time" value="true"/>
     <arg name="gui" value="false"/>
@@ -27,9 +27,9 @@
     <arg name="model" value="$(arg model)"/>
   </include>
 
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ROS1-SOAR)/rviz/config.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ros1_soar)/rviz/config.rviz"/>
 
-  <node name="map_server" pkg="map_server" type="map_server" args="$(find ROS1-SOAR)/map/map.yaml"/>
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ros1_soar)/map/map.yaml"/>
 
   <node pkg="tf" type="static_transform_publisher" name="map_transform" args="0 0 0 0 0 0 /odom /map 100"/>
 
@@ -77,8 +77,8 @@
     <param name="odom_frame_id"             value="odom"/>
     <param name="base_frame_id"             value="base_footprint"/>
   </node-->
-<node pkg="ROS1-SOAR" type="localization.py" name="localization" output="screen" />
-<node pkg="ROS1-SOAR" type="planning.py" name="planning" output="screen" >
+<node pkg="ros1_soar" type="localization.py" name="localization" output="screen" />
+<node pkg="ros1_soar" type="planning.py" name="planning" output="screen" >
     <param name="goal" value="$(arg goal)" />
 </node>
 
