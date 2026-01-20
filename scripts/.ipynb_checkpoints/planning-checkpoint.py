@@ -4,9 +4,9 @@
 import rospy
 from nav_msgs.srv import GetMap
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 import numpy as np
 import matplotlib.pyplot as plt
-from nav_msgs.msg import Path
 import tf
 
 # -----------------------------------------------------------
@@ -14,79 +14,115 @@ import tf
 # Represents a graph node mapped to a cell in the map
 # -----------------------------------------------------------
 class Node:
+    """
+    @brief Represents a graph node corresponding to a map cell.
+
+    Each node stores its map-space coordinates and its neighbors (edges).
+    """
+
     def __init__(self, mx, my):
-        # Map-space coordinates of the node
+        """
+        @brief Initialize a Node.
+
+        @param mx Map-space x-coordinate (column index)
+        @param my Map-space y-coordinate (row index)
+        """
         self.mx = mx
         self.my = my
-        # List of neighboring nodes (graph edges)
         self.neighbors = []
 
     def __repr__(self):
-        # String representation for debugging and logging
-        return str(self.mx) + ',' + str(self.my)
+        """
+        @brief String representation for debugging.
+
+        @return String "mx,my"
+        """
+        return f"{self.mx},{self.my}"
+
 
 # -----------------------------------------------------------
 # Global Planner Node
-# Handles map loading, graph creation, path planning, and visualization
 # -----------------------------------------------------------
 class GlobalPlannerNode:
+    """
+    @brief Main ROS node for global path planning and visualization.
+
+    Handles map loading, graph creation, path planning (DFS/A*),
+    pose publishing, and visualization.
+    """
+
     def __init__(self):
-        # Initialize the ROS node
+        """
+        @brief Initialize the GlobalPlannerNode.
+
+        Sets up ROS publishers, subscribers, loads the map,
+        builds the graph nodes, and prepares the manual tree.
+        """
         rospy.init_node("global_planner_manual_connections")
 
-        # Load the static map from the map server
+        # Map and grid
         self.map = self.load_map()
-
-        # Convert the map message into a NumPy grid
         self.grid, self.res, self.origin = self.process_map(self.map)
 
-        # Create graph nodes and coordinate lookup table
+        # Nodes and coordinate lookup
         self.nodes, self.coord_to_node = self.create_nodes(4, 4)
-
-        # Build a manually defined tree (currently empty)
         self.build_manual_tree()
-        
-        # ROS publishers for path visualization and goal publishing
+
+        # Publishers
         self.path_pub = rospy.Publisher('/global_planner/path', Path, queue_size=10)
         self.pose_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
-        
-        # Store the robot's current pose
-        self.robot_pose = None
 
-        # Subscribe to the robot pose topic
+        # Robot pose
+        self.robot_pose = None
         rospy.Subscriber("/robot_pose", PoseStamped, self.robot_pose_callback)
 
-        # TF listener (currently unused but initialized)
+        # TF listener
         listener = tf.TransformListener()
 
     # ---------------- Map Loading ----------------
     def load_map(self):
-        # Wait for the static map service and retrieve the map
+        """
+        @brief Retrieve the static occupancy map from ROS.
+
+        @return nav_msgs/OccupancyGrid containing the static map
+        """
         rospy.wait_for_service("static_map")
         get_map = rospy.ServiceProxy("static_map", GetMap)
         return get_map().map
 
     def process_map(self, map_msg):
-        # Extract map dimensions, resolution, and origin
+        """
+        @brief Convert OccupancyGrid message into a 2D binary grid.
+
+        @param map_msg OccupancyGrid message
+        @return tuple(grid, resolution, origin) where
+                grid: 2D NumPy array (0=free, 1=obstacle)
+                resolution: meters per grid cell
+                origin: (ox, oy) world origin coordinates
+        """
         w, h = map_msg.info.width, map_msg.info.height
         res = map_msg.info.resolution
         ox, oy = map_msg.info.origin.position.x, map_msg.info.origin.position.y
 
-        # Convert map data into a 2D NumPy grid
         grid = np.array(map_msg.data).reshape((h, w))
-
-        # Convert to binary grid: 0 = free, 1 = obstacle
         grid = (grid != 0).astype(int)
         return grid, res, (ox, oy)
 
     # ---------------- Node Creation ----------------
     def create_nodes(self, cols, rows):
-        # Create graph nodes laid out in a grid
+        """
+        @brief Create graph nodes arranged in a grid.
+
+        @param cols Number of columns
+        @param rows Number of rows
+        @return tuple(nodes, coord_to_node)
+                nodes: list of Node objects
+                coord_to_node: dict mapping (col,row) to Node
+        """
         nodes = []
         coord_to_node = {}
         for y in range(rows):
             for x in range(cols):
-                # Convert block coordinates to map coordinates
                 mx, my = self.block_to_map(x, y)
                 n = Node(mx, my)
                 nodes.append(n)
@@ -94,23 +130,23 @@ class GlobalPlannerNode:
         return nodes, coord_to_node
 
     def create_edges(self):
-        # Automatically create graph edges based on visibility
+        """
+        @brief Create edges between nodes based on row/column connectivity.
+
+        Checks visibility and adds bidirectional edges.
+        """
         for node in self.nodes:
             neighbors = self.get_row_or_column_neighbors(node)
-
-            # Remove self references
             neighbors = [n for n in neighbors if n != node]
             if not neighbors:
                 continue
 
-            # Find closest node in the same row
             row_neighbors = [n for n in neighbors if n.my == node.my]
             if row_neighbors:
                 closest_x = min(row_neighbors, key=lambda n: abs(n.mx - node.mx))
                 if self.has_horizontal_edge(node, closest_x):
                     self.add_edge(node, closest_x)
 
-            # Find closest node in the same column
             col_neighbors = [n for n in neighbors if n.mx == node.mx]
             if col_neighbors:
                 closest_y = min(col_neighbors, key=lambda n: abs(n.my - node.my))
@@ -118,12 +154,23 @@ class GlobalPlannerNode:
                     self.add_edge(node, closest_y)
 
     def get_row_or_column_neighbors(self, node):
-        # Return nodes that share either the same row or column (but not both)
+        """
+        @brief Return nodes sharing either row or column with the given node.
+
+        @param node Node to check
+        @return list of neighboring Node objects
+        """
         return [n for n in self.nodes if (n.mx == node.mx) ^ (n.my == node.my)]
 
     def has_horizontal_edge(self, node1, node2):
-        # Check for obstacles between two nodes on the same row
-        assert node1.my == node2.my, "Nodes must be in same row"
+        """
+        @brief Check if a horizontal edge exists (no obstacles in between).
+
+        @param node1 Node on the row
+        @param node2 Node on the row
+        @return True if clear, False otherwise
+        """
+        assert node1.my == node2.my
         y = node1.my
         for x in range(min(node1.mx, node2.mx) + 1, max(node1.mx, node2.mx)):
             if self.grid[y, x] == 1:
@@ -131,8 +178,14 @@ class GlobalPlannerNode:
         return True
 
     def has_vertical_edge(self, node1, node2):
-        # Check for obstacles between two nodes on the same column
-        assert node1.mx == node2.mx, "Nodes must be in same column"
+        """
+        @brief Check if a vertical edge exists (no obstacles in between).
+
+        @param node1 Node on the column
+        @param node2 Node on the column
+        @return True if clear, False otherwise
+        """
+        assert node1.mx == node2.mx
         x = node1.mx
         for y in range(min(node1.my, node2.my) + 1, max(node1.my, node2.my)):
             if self.grid[y, x] == 1:
@@ -141,116 +194,155 @@ class GlobalPlannerNode:
 
     # ---------------- Coordinate Conversion ----------------
     def block_to_map(self, bx, by):
-        # Convert block (grid) coordinates to map pixel coordinates
+        """
+        @brief Convert grid block coordinates to map indices.
+
+        @param bx Block x-coordinate
+        @param by Block y-coordinate
+        @return tuple(mx, my) map indices
+        """
         ox, oy = self.origin
         res = self.res
         mx = int((bx - ox) / res)
         my = int((by - oy) / res)
         return mx, my
-        
+
     def map_to_block(self, mx, my):
-        # Convert map pixel coordinates back to world coordinates
+        """
+        @brief Convert map indices to world coordinates.
+
+        @param mx Map x-index
+        @param my Map y-index
+        @return tuple(bx, by) world coordinates
+        """
         ox, oy = self.origin
         res = self.res
         bx = (mx + 0.5) * res + ox
         by = (my + 0.5) * res + oy
         return bx, by
 
-    # ---------------- Add Bidirectional Edge ----------------
+    # ---------------- Graph Management ----------------
     def add_edge(self, a, b):
-        # Add a bidirectional graph connection between two nodes
+        """
+        @brief Add a bidirectional edge between two nodes.
+
+        @param a Node
+        @param b Node
+        """
         if b not in a.neighbors:
             a.neighbors.append(b)
         if a not in b.neighbors:
             b.neighbors.append(a)
 
-    # ---------------- Hardcoded Tree ----------------
     def build_manual_tree(self):
-        # Placeholder for manual edge creation
+        """
+        @brief Placeholder for building a manual tree of edges.
+        """
         c = self.coord_to_node
 
-    # ---------------- Robot Pose Callback ----------------
+    # ---------------- Robot Pose ----------------
     def robot_pose_callback(self, msg):
-        # Update robot pose and trigger visualization
+        """
+        @brief Update robot pose and trigger visualization.
+
+        @param msg PoseStamped ROS message
+        """
         self.robot_pose = msg.pose
         self.visualize()
 
-    # ---------------- Goal Pose Creator ----------------
     def make_pose(self, x, y, yaw=0.0, frame="map"):
-        # Create a PoseStamped message for a given position and orientation
+        """
+        @brief Create a PoseStamped message.
+
+        @param x X-coordinate
+        @param y Y-coordinate
+        @param yaw Rotation around Z-axis in radians
+        @param frame Coordinate frame
+        @return PoseStamped message
+        """
         pose = PoseStamped()
         pose.header.stamp = rospy.Time.now()
         pose.header.frame_id = frame
-    
         pose.pose.position.x = float(x)
         pose.pose.position.y = float(y)
         pose.pose.position.z = 0.0
-    
-        # Convert yaw angle to quaternion
         q = tf.transformations.quaternion_from_euler(0, 0, yaw)
         pose.pose.orientation.x = q[0]
         pose.pose.orientation.y = q[1]
         pose.pose.orientation.z = q[2]
         pose.pose.orientation.w = q[3]
-
         return pose
 
-    # ---------------- Path Publisher ----------------
     def publish_path(self, path):
-        # Publish a ROS Path message from a list of nodes
+        """
+        @brief Publish a path as a ROS Path message.
+
+        @param path list of Node objects representing the path
+        """
         msg = Path()
         msg.header.stamp = rospy.Time.now()
         msg.header.frame_id = "map"
-    
+
         for node in path:
             wx, wy = self.map_to_block(node.mx, node.my)
             pose = self.make_pose(wx, wy)
             msg.poses.append(pose)
-    
+
         self.path_pub.publish(msg)
 
-    # ---------------- Depth-First Search ----------------
+    # ---------------- Path Planning ----------------
     def dfs(self, start_node, goal_node):
-        # Perform DFS search from start to goal
+        """
+        @brief Depth-First Search from start to goal.
+
+        @param start_node Node to start from
+        @param goal_node Goal node
+        @return list of Node objects representing path or None
+        """
         visited = set()
         path = []
-    
+
         def recurse(node):
             if node in visited:
                 return False
             visited.add(node)
             path.append(node)
-    
             if node == goal_node:
                 return True
-    
             for child in node.neighbors:
                 if recurse(child):
                     return True
-    
             path.pop()
             return False
-    
+
         found = recurse(start_node)
-    
-        # Publish poses if path is found
         if found:
+            self.publish_path(path)
             for node in path:
                 bx, by = self.map_to_block(node.mx, node.my)
-                self.publish_path(path)
                 self.pose_pub.publish(self.make_pose(bx, by))
             return path
         else:
             return None
 
-    # ---------------- Manhattan Distance Heuristic ----------------
     def manhattan_h(self, node, goal_node):
-        # Compute Manhattan distance heuristic
+        """
+        @brief Manhattan distance heuristic.
+
+        @param node Current node
+        @param goal_node Goal node
+        @return Integer distance
+        """
         return abs(goal_node.mx - node.mx) + abs(goal_node.my - node.my)
 
     def sort_h(self, nodes):
-        # Select node with lowest heuristic cost
-        lowest_cost = 100000
+        """
+        @brief Select node with lowest heuristic cost to goal.
+
+        @param nodes list of Node objects
+        @return Node with lowest heuristic
+        """
+        lowest_cost = float('inf')
         chosen = None
         goal = self.make_goal_node()
         for node in nodes:
@@ -261,15 +353,23 @@ class GlobalPlannerNode:
         return chosen
 
     def parse_goal(self, goal):
-        # Parse and validate goal coordinates from ROS parameter
+        """
+        @brief Parse a ROS parameter goal string.
+
+        @param goal string in format "x,y"
+        @return tuple (gx, gy) as integers
+        """
         gx, gy = map(int, goal.split(','))
         if not (0 <= gx <= 3 and 0 <= gy <= 3):
             raise ValueError("Goal invalid")
         return gx, gy
 
-    # ---------------- Dynamic Goal Node Creation ----------------
     def make_goal_node(self):
-        # Create goal node from ROS parameter or default
+        """
+        @brief Create goal node from ROS parameter or default.
+
+        @return Node object representing goal
+        """
         goal = rospy.get_param('~goal')
         gx, gy = 3, 3
         try:
@@ -278,14 +378,18 @@ class GlobalPlannerNode:
             print('Goal invalid, using default 3,3')
         return self.coord_to_node[(gx, gy)]
 
-    # ---------------- A* Search ----------------
     def a_star(self, start_node, goal_node):
-        # Perform A* pathfinding
-        open_set = set()
+        """
+        @brief Perform A* pathfinding from start to goal.
+
+        @param start_node Node to start from
+        @param goal_node Goal Node
+        @return list of Node objects representing path or None
+        """
+        open_set = set([start_node])
         closed_set = set()
         parent = {}
 
-        open_set.add(start_node)
         goal = goal_node
         found = False
 
@@ -294,10 +398,8 @@ class GlobalPlannerNode:
             if current == goal:
                 found = True
                 break
-
             open_set.remove(current)
             closed_set.add(current)
-
             for neighbor in current.neighbors:
                 if neighbor in closed_set:
                     continue
@@ -305,7 +407,6 @@ class GlobalPlannerNode:
                     open_set.add(neighbor)
                     parent[neighbor] = current
 
-        # Path reconstruction
         if found:
             path = []
             node = goal
@@ -315,21 +416,22 @@ class GlobalPlannerNode:
             path.append(start_node)
             path.reverse()
 
-            # Publish path and poses
             self.publish_path(path)
             for node in path:
                 bx, by = self.map_to_block(node.mx, node.my)
                 self.pose_pub.publish(self.make_pose(bx, by))
-
             return path
         else:
             return None
 
     # ---------------- Visualization ----------------
     def visualize(self):
-        # Build edges and visualize the map, nodes, and path
+        """
+        @brief Visualize map, nodes, edges, robot position, and path.
+
+        Builds graph edges, performs A* pathfinding, and plots the results.
+        """
         self.create_edges()
-        
         rx = round(self.robot_pose.position.x)
         ry = round(self.robot_pose.position.y)
         start_node = self.coord_to_node.get((rx, ry), None)
@@ -338,33 +440,24 @@ class GlobalPlannerNode:
 
         plt.rcParams['figure.figsize'] = [7, 7]
         fig, ax = plt.subplots()
-
-        # Draw walls
         wall_positions = np.argwhere(self.grid == 1)
-        ax.scatter(wall_positions[:, 1], wall_positions[:, 0],
-                   c='darkblue', alpha=1.0, s=6**2, label="Walls")
+        ax.scatter(wall_positions[:, 1], wall_positions[:, 0], c='darkblue', alpha=1.0, s=36, label="Walls")
 
-        # Draw nodes
         node_positions = np.array([[n.mx, n.my] for n in self.nodes])
-        ax.scatter(node_positions[:, 0], node_positions[:, 1],
-                   c='mediumblue', alpha=1.0, s=8**2, label="Nodes")
+        ax.scatter(node_positions[:, 0], node_positions[:, 1], c='mediumblue', alpha=1.0, s=64, label="Nodes")
 
-        # Draw A* path
         if path:
             path_positions = np.array([[n.mx, n.my] for n in path])
-            ax.scatter(path_positions[:, 0], path_positions[:, 1],
-                       c='green', alpha=1.0, s=8**2, label="A* Path")
+            ax.scatter(path_positions[:, 0], path_positions[:, 1], c='green', alpha=1.0, s=64, label="A* Path")
             for idx in range(1, len(path_positions)):
                 x0, y0 = path_positions[idx - 1]
                 x1, y1 = path_positions[idx]
                 ax.plot([x0, x1], [y0, y1], c='green', linewidth=2)
 
-        # Draw robot position
         rx_px = int((self.robot_pose.position.x - self.origin[0]) / self.res)
         ry_px = int((self.robot_pose.position.y - self.origin[1]) / self.res)
-        ax.scatter(rx_px, ry_px, c='red', s=15**2, marker='*', label="Robot Position")
+        ax.scatter(rx_px, ry_px, c='red', s=225, marker='*', label="Robot Position")
 
-        # Draw graph edges
         for n in self.nodes:
             for nb in n.neighbors:
                 ax.plot([n.mx, nb.mx], [n.my, nb.my], c='dodgerblue', linewidth=1)
@@ -379,8 +472,11 @@ class GlobalPlannerNode:
         ax.legend(loc='upper left', framealpha=0.8)
         plt.show()
 
+
 # ---------------- Main ----------------
 if __name__ == "__main__":
-    # Instantiate and spin the global planner node
+    """
+    @brief Run the global planner node.
+    """
     node = GlobalPlannerNode()
     rospy.spin()

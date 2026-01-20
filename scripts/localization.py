@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+@file maze_escape.py
+@brief Localization and visualization node using laser scans and kNN.
+
+This ROS node estimates the robot position in a known occupancy grid map
+by matching laser scan data against a kNN classifier trained on the map.
+The estimated pose is published and visualized in real time.
+"""
+
 import rospy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -29,10 +38,10 @@ pose_pub = None
 
 def init_ros():
     """
-    Initialize the ROS node for this program.
+    @brief Initialize the ROS node.
 
-    Creates the ROS node named 'mazeEscape' and enables logging.
-    This function must be called before using any ROS features.
+    Creates the ROS node named @c mazeEscape and enables ROS logging.
+    This function must be called before any ROS communication is used.
     """
     rospy.init_node('mazeEscape', anonymous=True)
     rospy.loginfo("Node started: mazeEscape")
@@ -40,13 +49,11 @@ def init_ros():
 
 def get_map() -> OccupancyGrid:
     """
-    Retrieve the static occupancy grid map from the ROS map server.
+    @brief Retrieve the static occupancy grid map.
 
-    Waits for the '/static_map' service to become available and then
-    requests the map.
+    Waits for the @c /static_map service and requests the map.
 
-    Returns:
-        OccupancyGrid: The received static map.
+    @return The received occupancy grid map.
     """
     rospy.wait_for_service('static_map')
     get_map_srv = rospy.ServiceProxy('static_map', GetMap)
@@ -55,14 +62,12 @@ def get_map() -> OccupancyGrid:
 
 def scan_callback(msg: LaserScan):
     """
-    Callback function for the LaserScan subscriber.
+    @brief Process incoming laser scan data.
 
-    Converts laser scan data from polar coordinates (range, angle)
-    into Cartesian coordinates (x, y) in the robot's local frame.
-    Invalid range measurements are filtered out.
+    Converts valid laser scan ranges from polar coordinates into
+    Cartesian coordinates in the robot frame and stores them globally.
 
-    The resulting point cloud is stored in the global variable
-    'scan_data'.
+    @param msg Incoming LaserScan message.
     """
     global scan_data
 
@@ -81,13 +86,12 @@ def scan_callback(msg: LaserScan):
 
 def publish_pose(robot_pose):
     """
-    Publish the estimated robot position as a PoseStamped message.
+    @brief Publish the estimated robot pose.
 
-    The pose is published in the 'map' frame with zero orientation
-    (yaw = 0), since orientation estimation is not handled here.
+    Publishes the robot position as a PoseStamped message in the @c map
+    coordinate frame with zero orientation.
 
-    Args:
-        robot_pose (tuple): (x, y) position of the robot in world frame.
+    @param robot_pose Tuple containing the robot position (x, y).
     """
     px, py = robot_pose
 
@@ -111,15 +115,12 @@ def publish_pose(robot_pose):
 
 def map_to_world(mx, my, rec_map):
     """
-    Convert map grid coordinates (cell indices) to world coordinates.
+    @brief Convert map indices to world coordinates.
 
-    Args:
-        mx (float): Map x-index (column).
-        my (float): Map y-index (row).
-        rec_map (OccupancyGrid): Map metadata.
-
-    Returns:
-        tuple: (x, y) position in world coordinates (meters).
+    @param mx Map x-index (column).
+    @param my Map y-index (row).
+    @param rec_map Occupancy grid map metadata.
+    @return World coordinates (x, y) in meters.
     """
     res = rec_map.info.resolution
     ox = rec_map.info.origin.position.x
@@ -129,15 +130,12 @@ def map_to_world(mx, my, rec_map):
 
 def world_to_map(wx, wy, rec_map):
     """
-    Convert world coordinates to map grid coordinates.
+    @brief Convert world coordinates to map indices.
 
-    Args:
-        wx (float): World x-coordinate (meters).
-        wy (float): World y-coordinate (meters).
-        rec_map (OccupancyGrid): Map metadata.
-
-    Returns:
-        tuple: (mx, my) map indices (floating point).
+    @param wx World x-coordinate in meters.
+    @param wy World y-coordinate in meters.
+    @param rec_map Occupancy grid map metadata.
+    @return Map indices (mx, my).
     """
     res = rec_map.info.resolution
     ox = rec_map.info.origin.position.x
@@ -147,16 +145,13 @@ def world_to_map(wx, wy, rec_map):
 
 def transform_scan(scan_points, robot_pose):
     """
-    Transform laser scan points from the robot frame to world frame.
+    @brief Transform laser scan points into the world frame.
 
-    Applies a 2D rotation and translation based on the robot pose.
+    Applies a planar rotation and translation based on the robot pose.
 
-    Args:
-        scan_points (np.ndarray): Nx2 array of scan points in robot frame.
-        robot_pose (tuple): (x, y, theta) robot pose in world frame.
-
-    Returns:
-        np.ndarray: Nx2 array of scan points in world coordinates.
+    @param scan_points Nx2 array of scan points in robot frame.
+    @param robot_pose Tuple (x, y, theta) describing robot pose.
+    @return Nx2 array of scan points in world coordinates.
     """
     x, y, theta = robot_pose
     c, s = np.cos(theta), np.sin(theta)
@@ -170,17 +165,13 @@ def transform_scan(scan_points, robot_pose):
 
 def push_away(scan_points, distance=0.10):
     """
-    Push laser scan points slightly outward from the robot.
+    @brief Push laser scan points outward from the robot.
 
-    This helps prevent points from being too close to the robot,
-    improving robustness during localization.
+    Helps avoid numerical issues caused by points too close to the origin.
 
-    Args:
-        scan_points (np.ndarray): Nx2 laser scan points.
-        distance (float): Distance to push points outward (meters).
-
-    Returns:
-        np.ndarray: Modified scan points.
+    @param scan_points Nx2 array of laser scan points.
+    @param distance Distance to push points outward in meters.
+    @return Modified scan points.
     """
     r = np.linalg.norm(scan_points, axis=1)
     r[r == 0] = 1e-6
@@ -189,19 +180,15 @@ def push_away(scan_points, distance=0.10):
 
 def localize_robot(scan_points, knn, free_cells):
     """
-    Estimate the robot position by matching laser scans to the map.
+    @brief Estimate the robot position using scan-to-map matching.
 
-    For each free cell in the map, the scan is translated to that
-    location and evaluated using a kNN classifier. The position
-    that results in the highest number of wall hits is selected.
+    Evaluates translated laser scans against a kNN map classifier and
+    selects the position with the highest number of wall hits.
 
-    Args:
-        scan_points (np.ndarray): Laser scan points in robot frame.
-        knn (KNeighborsClassifier): Trained map classifier.
-        free_cells (list): List of possible robot positions.
-
-    Returns:
-        tuple: Estimated robot position (x, y).
+    @param scan_points Laser scan points in robot frame.
+    @param knn Trained kNN classifier.
+    @param free_cells List of possible robot positions.
+    @return Estimated robot position (x, y).
     """
     best_score = -1
     best_pose = None
@@ -226,13 +213,10 @@ def localize_robot(scan_points, knn, free_cells):
 
 def build_map_array(rec_map):
     """
-    Convert the OccupancyGrid map data into a 2D NumPy array.
+    @brief Convert an occupancy grid into a NumPy array.
 
-    Args:
-        rec_map (OccupancyGrid): Received map.
-
-    Returns:
-        np.ndarray: 2D array representing the map.
+    @param rec_map Received occupancy grid map.
+    @return 2D NumPy array representation of the map.
     """
     w = rec_map.info.width
     h = rec_map.info.height
@@ -241,21 +225,14 @@ def build_map_array(rec_map):
 
 def prepare_knn_data(map_array, rec_map):
     """
-    Generate training data for the kNN classifier from the map.
+    @brief Generate training data for the kNN classifier.
 
-    Each map cell is converted into a world coordinate and labeled
-    as free space or wall. Free cells are also stored separately
-    for localization.
+    Converts each map cell into world coordinates and labels it as
+    free space or obstacle.
 
-    Args:
-        map_array (np.ndarray): 2D occupancy map.
-        rec_map (OccupancyGrid): Map metadata.
-
-    Returns:
-        tuple: (X, y, free_cells)
-            X : World coordinates of all map cells
-            y : Corresponding wall/free labels
-            free_cells : List of valid robot positions
+    @param map_array 2D occupancy grid array.
+    @param rec_map Occupancy grid map metadata.
+    @return Tuple (X, y, free_cells).
     """
     h, w = map_array.shape
     X, y, free_cells = [], [], []
@@ -276,14 +253,11 @@ def prepare_knn_data(map_array, rec_map):
 
 def train_knn(X, y):
     """
-    Train a k-Nearest Neighbors classifier on the map data.
+    @brief Train a k-Nearest Neighbors classifier.
 
-    Args:
-        X (np.ndarray): World coordinates of map cells.
-        y (np.ndarray): Occupancy labels.
-
-    Returns:
-        KNeighborsClassifier: Trained classifier.
+    @param X World coordinates of map cells.
+    @param y Occupancy labels.
+    @return Trained kNN classifier.
     """
     knn = neighbors.KNeighborsClassifier(n_neighbors=1)
     knn.fit(X, y)
@@ -297,10 +271,9 @@ def train_knn(X, y):
 
 def visualize_knn(knn, X):
     """
-    Visualize the learned kNN decision boundary of the map.
+    @brief Visualize the learned kNN decision boundary.
 
-    Displays free space and walls as classified by the trained
-    kNN model.
+    Displays free space and obstacles as classified by the model.
     """
     colours = ListedColormap(["#d3d3d3", "#00008b"])
 
@@ -326,11 +299,10 @@ def visualize_knn(knn, X):
 
 def visualization_loop(map_array, rec_map, knn, free_cells):
     """
-    Main runtime loop for localization and visualization.
+    @brief Main localization and visualization loop.
 
-    Continuously localizes the robot using incoming laser scans,
-    publishes the estimated pose, and visualizes the result on
-    the map.
+    Continuously estimates the robot pose, publishes it, and visualizes
+    laser scans and robot position on the map.
     """
     plt.ion()
     fig, ax = plt.subplots(figsize=(8, 8))
@@ -367,10 +339,10 @@ def visualization_loop(map_array, rec_map, knn, free_cells):
 
 def main():
     """
-    Program entry point.
+    @brief Program entry point.
 
-    Initializes ROS, loads the map, trains the classifier,
-    sets up subscribers and publishers, and starts the main loop.
+    Initializes ROS, loads the map, trains the classifier, sets up
+    communication, and starts the visualization loop.
     """
     global pose_pub
 

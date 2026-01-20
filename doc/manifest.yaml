@@ -1,0 +1,17 @@
+actions: []
+authors: ''
+brief: ''
+bugtracker: ''
+depends:
+- std_msgs
+- catkin
+- rospy
+- roscpp
+description: The soar_maze_escape package
+license: TODO
+maintainers: root <root@todo.todo>
+msgs: []
+package_type: package
+repo_url: ''
+srvs: []
+url: ''

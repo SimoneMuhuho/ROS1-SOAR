@@ -1,3 +1,6 @@
+doxygen:
+  file_patterns: '*.py'
+
 sphinx:
   builder: html
   source_dir: docs
